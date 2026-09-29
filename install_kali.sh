@@ -33,9 +33,10 @@ if grep -qi kali /etc/os-release 2>/dev/null; then
              evil-winrm certipy-ad smbmap enum4linux-ng ldap-utils hydra medusa ncrack john hashcat \
              hashid cewl crunch seclists wordlists aircrack-ng wifite kismet reaver bully bettercap \
              hcxtools hcxdumptool wireshark tshark tcpdump ettercap-graphical dsniff macchanger \
-             mitmproxy radare2 gdb ltrace strace binwalk exiftool foremost steghide stegseek \
+             mitmproxy sslscan testssl.sh radare2 gdb ltrace strace binwalk exiftool foremost steghide stegseek \
              volatility3 apktool jadx dex2jar frida adb chisel proxychains4 socat sshuttle \
-             docker.io trivy python3-scapy python3-pywifi python3-impacket; do
+             docker.io trivy python3-scapy python3-pywifi python3-impacket \
+             yara python3-yara pev ssdeep python3-oletools clamav cabextract sigma-cli capstone; do
     dpkg -s "$pkg" >/dev/null 2>&1 || sudo apt install -y "$pkg" 2>/dev/null || echo "  atlandi: $pkg"
   done
 fi
@@ -45,6 +46,8 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 # JARVIS'in yazacağı güvenlik scriptleri için sık kullanılan Python kütüphaneleri (best-effort)
 .venv/bin/python -m pip install scapy pywifi python-nmap paramiko requests pycryptodome impacket 2>/dev/null || true
+# Malware analiz + tespit araçları (savunma tarafı): YARA kuralları, capa, floss
+.venv/bin/python -m pip install yara-python capa flare-floss 2>/dev/null || true
 [[ -f config/api_keys.json ]] || cp config/api_keys.example.json config/api_keys.json
 chmod 600 config/api_keys.json 2>/dev/null || true
 echo "Kurulum tamamlandi. Baslatmak icin ./run_kali.sh calistirin."
