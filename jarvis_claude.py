@@ -637,6 +637,8 @@ TOOLS = [
                            "target": {"type": "string", "description": "start için izinli laboratuvar IP'si/alan adı"}}, ["action"])},
     {"name": "lab_test", "description": "Aktif, izinli Kali laboratuvarı hedefinde kullanıcının istediği test komutunu çalıştırır. Komut çalışmadan önce tam komut ve hedef onay penceresinde gösterilir; hedef komutta da açıkça bulunmalıdır. Çıktı ve komut yerel rapora kaydedilir, yapılandırıldıysa özel GitHub deposuna otomatik aktarılır. Yalnızca kullanıcının kendi veya açıkça izinli eğitim hedefleri.",
      "input_schema": _obj({"command": {"type": "string", "description": "Kullanıcının açıkça istediği terminal komutu"}}, ["command"])},
+    {"name": "sec_orchestrate", "description": "Aktif izinli lab hedefinde TEK komutla çok-aşamalı otomatik değerlendirme yürütür: kurulu araçları keşfedip (nmap, whatweb, wafw00f, gobuster, nikto, nuclei…) uygun sırayla zincirler, TEK onayla hepsini çalıştırır, çıktıları rapora yazar ve özet döner. Kullanıcı 'şu hedefi analiz et / tam tarama / otomatik pentest yap' derse kullan. phase: network (port/servis+vuln), web (web zafiyet zinciri), full (ikisi). Önce lab_session ile hedef izinli olmalı. Eksik araçları atlar; sonra sqlmap/hydra gibi derin adımları lab_test ile öner.",
+     "input_schema": _obj({"phase": {"type": "string", "enum": ["network", "web", "full"]}}, [])},
     {"name": "get_weather", "description": "Bir şehrin güncel hava durumunu ve kısa tahminini verir.",
      "input_schema": _obj({"location": {"type": "string"}}, ["location"])},
     {"name": "browser_control", "description": "Tarayıcıda URL açar ya da Google'da arama yapar.",
@@ -1690,14 +1692,17 @@ class Tools:
             return f"GitHub aktarımı başarısız: {(push.stderr or push.stdout)[:300]}"
         return f"Rapor özel GitHub deposuna aktarıldı: {repo}"
 
-    def t_lab_test(self, command):
-        if not sys.platform.startswith("linux"):
-            return "Laboratuvar komutları yalnızca Kali/Linux'ta çalıştırılır."
+    def _lab_active(self):
+        """Aktif izinli oturumu döndürür: (target, report) ya da (None, hata_metni)."""
         state = load_json(LAB_SESSION_FILE, {})
         target = str(state.get("target", "")).strip()
         report = Path(state.get("report", ""))
         if not state.get("active") or not target or not report.is_file():
-            return "Önce izinli bir hedefle lab_session(action='start') başlat."
+            return None, "Önce izinli bir hedefle lab_session(action='start') başlat."
+        return target, report
+
+    def _lab_validate(self, command, target):
+        """Komutu kapsam/hedef kurallarına göre doğrular. Uygunsa None, değilse hata metni döner."""
         if not command or len(command) > 2000:
             return "Komut boş olamaz ve 2000 karakteri aşamaz."
         if not re.search(r"(?<![A-Za-z0-9_.:-])" + re.escape(target) + r"(?![A-Za-z0-9_.:-])", command, re.I):
@@ -1726,9 +1731,11 @@ class Tools:
         permitted_domains.add(target.lower().rstrip("."))
         if any(domain.lower().rstrip(".") not in permitted_domains for domain in domains):
             return "Komutta aktif hedef dışı bir alan adı var; izinli kapsam dışı komut çalıştırılmadı."
-        if not self.app.ask_confirm("Laboratuvar komutu", f"Hedef: {target}\n\nKomut:\n{command}\n\nÇalıştırılsın mı?"):
-            return "Kullanıcı komutu onaylamadı."
-        result = subprocess.run(["bash", "-lc", command], capture_output=True, text=True, timeout=300,
+        return None
+
+    def _lab_run(self, command, target, report, timeout=300):
+        """Onaylanmış bir komutu çalıştırır, rapora yazar. (çıkış_kodu, güvenli_çıktı) döner."""
+        result = subprocess.run(["bash", "-lc", command], capture_output=True, text=True, timeout=timeout,
                                 encoding="utf-8", errors="replace")
         raw = (result.stdout + ("\n[stderr]\n" + result.stderr if result.stderr.strip() else "")).strip()
         safe_command, command_secret = self._lab_redact(command)
@@ -1738,9 +1745,92 @@ class Tools:
             f.write(f"\n### {datetime.now().isoformat(timespec='seconds')}\n\n"
                     f"- Hedef: `{target}`\n- Komut: `{safe_command}`\n- Çıkış kodu: {result.returncode}\n\n"
                     f"```text\n{safe_output or '(çıktı yok)'}\n```\n")
+        self._lab_secret = command_secret or output_secret
+        return result.returncode, safe_output
+
+    def t_lab_test(self, command):
+        if not sys.platform.startswith("linux"):
+            return "Laboratuvar komutları yalnızca Kali/Linux'ta çalıştırılır."
+        target, report = self._lab_active()
+        if target is None:
+            return report
+        err = self._lab_validate(command, target)
+        if err:
+            return err
+        if not self.app.ask_confirm("Laboratuvar komutu", f"Hedef: {target}\n\nKomut:\n{command}\n\nÇalıştırılsın mı?"):
+            return "Kullanıcı komutu onaylamadı."
+        rc, out = self._lab_run(command, target, report)
         publish = ("Rapor özel depoya otomatik aktarılmadı: olası gizli bilgi bulundu."
-                   if command_secret or output_secret else self._lab_publish(report))
-        return f"Komut tamamlandı (çıkış kodu {result.returncode}).\n{safe_output[:4000]}\n\nRapor: {report}\n{publish}"
+                   if getattr(self, "_lab_secret", False) else self._lab_publish(report))
+        return f"Komut tamamlandı (çıkış kodu {rc}).\n{out[:4000]}\n\nRapor: {report}\n{publish}"
+
+    def t_sec_orchestrate(self, phase="full"):
+        """Tek komutla çok-aşamalı otomatik pipeline: kurulu araçları seçip zincirler, tek onayla çalıştırır."""
+        if not sys.platform.startswith("linux"):
+            return "Orkestrasyon yalnızca Kali/Linux'ta çalışır."
+        target, report = self._lab_active()
+        if target is None:
+            return report
+        t = target
+        u = t if t.startswith(("http://", "https://")) else "http://" + t
+        # aşama → (gerekli_araç, komut şablonu). {t}=hedef, {u}=url. Kurulu olmayan araç atlanır.
+        NET = [
+            ("nmap", f"nmap -sV -sC -Pn -T4 {t}"),
+            ("nmap", f"nmap -sV -p- -T4 --min-rate 1000 {t}"),
+            ("nmap", f"nmap --script vuln -Pn {t}"),
+        ]
+        WEB = [
+            ("whatweb", f"whatweb {u}"),
+            ("wafw00f", f"wafw00f {u}"),
+            ("nmap", f"nmap -sV -sC -Pn -p80,443,8080,8443 {t}"),
+            ("gobuster", f"gobuster dir -u {u} -w /usr/share/wordlists/dirb/common.txt -q -t 40"),
+            ("nikto", f"nikto -h {u} -maxtime 120"),
+            ("nuclei", f"nuclei -u {u} -silent -severity medium,high,critical"),
+        ]
+        plan_src = {"network": NET, "web": WEB, "full": NET + WEB}.get(phase, NET + WEB)
+        # kurulu araçları seç, doğrula
+        plan, missing = [], []
+        seen = set()
+        for tool, cmd in plan_src:
+            if cmd in seen:
+                continue
+            seen.add(cmd)
+            if not shutil.which(tool):
+                if tool not in missing:
+                    missing.append(tool)
+                continue
+            if self._lab_validate(cmd, target) is None:
+                plan.append(cmd)
+        if not plan:
+            miss = ", ".join(missing) or "yok"
+            return f"Çalıştırılabilir araç bulunamadı (eksik: {miss}). kali_tool(action='install') ile kurabilirim."
+        preview = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(plan))
+        if not self.app.ask_confirm(
+                f"Otomatik değerlendirme ({phase})",
+                f"Hedef: {target}\n\nŞu {len(plan)} komut sırayla çalışacak:\n\n{preview}\n\nHepsi onaylansın mı?"):
+            return "Kullanıcı planı onaylamadı."
+        results = []
+        any_secret = False
+        for i, cmd in enumerate(plan, 1):
+            self.q_status(f"[{i}/{len(plan)}] {cmd.split()[0]}…")
+            try:
+                rc, out = self._lab_run(cmd, target, report, timeout=240)
+                any_secret = any_secret or getattr(self, "_lab_secret", False)
+                results.append(f"[{i}] {cmd}\n(çıkış {rc})\n{out[:1500]}")
+            except subprocess.TimeoutExpired:
+                results.append(f"[{i}] {cmd}\n(zaman aşımı — atlandı)")
+            except Exception as e:
+                results.append(f"[{i}] {cmd}\n(hata: {type(e).__name__})")
+            if self.app.stop_event.is_set():
+                results.append("(kullanıcı durdurdu)")
+                break
+        publish = ("Rapor özel depoya aktarılmadı: olası gizli bilgi bulundu."
+                   if any_secret else self._lab_publish(report))
+        miss = f"\nEksik araçlar (atlandı): {', '.join(missing)}" if missing else ""
+        return (f"Otomatik değerlendirme tamamlandı — {len(results)} aşama.{miss}\n\n"
+                + "\n\n".join(results)[:6000]
+                + f"\n\nTam rapor: {report}\n{publish}\n\n"
+                "Bulguları önem sırasına göre yorumlayıp sonraki adımı (ör. sqlmap/hydra) öner.")
 
     def t_get_weather(self, location):
         url = f"https://wttr.in/{urllib.parse.quote(location)}?format=j1&lang=tr"
