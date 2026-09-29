@@ -1,0 +1,14 @@
+anthropic
+SpeechRecognition
+pyaudio
+psutil
+pillow
+edge-tts
+pyautogui
+pygetwindow
+pywin32
+python-pptx
+numpy
+imageio-ffmpeg
+yt-dlp
+vosk

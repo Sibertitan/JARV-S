@@ -1,0 +1,19 @@
+# Kişisel/gizli — depoya girmesin
+config/api_keys.json
+memory/
+jarvis_log.txt
+hata.txt
+
+# Büyük ikili dosyalar (GitHub Releases ile dağıt)
+*.exe
+*.apk
+offline/model.gguf
+offline/vosk-tr/
+offline/cloudflared.exe
+
+# Python
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec

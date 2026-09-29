@@ -1,0 +1,17 @@
+﻿J.A.R.V.I.S - UCRETSIZ SURUM (Google Gemini ile calisir)
+
+KURULUM (2 dakika):
+1) JARVIS Ucretsiz.exe dosyasina cift tikla.
+   ("Windows korudu" uyarisi cikarsa: Daha fazla bilgi -> Yine de calistir)
+2) Acilan kutuya UCRETSIZ Gemini API anahtarini yapistir:
+   - https://aistudio.google.com/apikey adresine git
+   - Google ile giris yap -> "Create API key" -> anahtari kopyala
+   - JARVIS'teki kutuya yapistir -> Tamam
+3) Hazir. Konusarak ya da yazarak kullan.
+
+ONEMLI:
+- "offline" ve "config" klasorleri exe ile ayni yerde kalmali, silme.
+- Anahtarin sadece senin config klasorunde tutulur, kimseyle paylasilmaz.
+- Herkes kendi ucretsiz Gemini anahtarini girer.
+
+Gelistiren: Ali Ihsan Kahraman
