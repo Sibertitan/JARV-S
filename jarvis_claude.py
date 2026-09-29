@@ -776,6 +776,9 @@ TOOLS = [
                            "ram_mb": {"type": "integer", "description": "create için RAM (MB), varsayılan 8192"},
                            "disk_gb": {"type": "integer", "description": "create için disk (GB), varsayılan 80"},
                            "cpu": {"type": "integer", "description": "create için çekirdek sayısı, varsayılan 4"}}, ["action"])},
+    {"name": "self_test",
+     "description": "JARVIS sağlık kontrolü/tanılama: sağlayıcı ve API anahtarı, internet, Tor/anonimlik durumu, MAC, kurulu güvenlik araçları, mikrofon/STT, config ve hafıza, mesh durumunu tek seferde raporlar. Kullanıcı 'kendini test et / sağlık kontrolü / her şey çalışıyor mu' derse kullan.",
+     "input_schema": _obj({}, [])},
     {"name": "anonymous_mode",
      "description": ("Tor anonim modu: JARVIS'in KENDİ web isteklerini (Gemini, arama, hava durumu) yerel Tor "
                      "üzerinden geçirip çıkış IP'sini gizler; FAIL-CLOSED (Tor düşerse gerçek IP sızmasın diye "
@@ -1463,6 +1466,53 @@ class Tools:
                 seen.add(key)
                 parts.append(f"Disk {root}: {d.free / 2**30:.1f} GB boş / {d.total / 2**30:.1f} GB")
         return "\n".join(parts)
+
+    def t_self_test(self):
+        """JARVIS sağlık kontrolü: sağlayıcı, internet, Tor/anonimlik, araçlar, mikrofon, config."""
+        ok, warn = "[OK]", "[!]"
+        L = ["JARVIS SAĞLIK KONTROLÜ", f"Platform: {platform.system()} {platform.release()} ({os.name})",
+             f"Makine adı: {default_machine_name()}"]
+        cfg = load_json(CONFIG_FILE, {})
+        # Sağlayıcı + anahtar
+        prov = getattr(self.app, "provider", "?")
+        gkey = bool(cfg.get("gemini_api_key", "").strip())
+        L.append(f"{ok if gkey else warn} Sağlayıcı: {prov} | Gemini anahtarı: {'var' if gkey else 'YOK'}")
+        # İnternet
+        net = has_internet()
+        L.append(f"{ok if net else warn} İnternet: {'bağlı' if net else 'yok (çevrimdışı moda düşer)'}")
+        # Tor / anonimlik (Linux)
+        if os.name != "nt":
+            tor = tor_socks_ready()
+            L.append(f"{ok if tor else warn} Tor SOCKS (9050): {'çalışıyor' if tor else 'kapalı'} | "
+                     f"Anonim mod: {'AÇIK' if ANON['on'] else 'kapalı'}")
+            iface = active_iface()
+            if iface:
+                L.append(f"   Arayüz: {iface}  MAC: {current_mac(iface)}  "
+                         f"macchanger: {'var' if shutil.which('macchanger') else 'yok'}")
+        # Mikrofon / STT
+        try:
+            import speech_recognition  # noqa: F401
+            L.append(f"{ok} SpeechRecognition kurulu | Vosk model: "
+                     f"{'var' if VOSK_TR.exists() else 'yok (çevrimdışı STT sınırlı)'}")
+        except ImportError:
+            L.append(f"{warn} SpeechRecognition kurulu değil")
+        # Güvenlik araçları (Linux)
+        if os.name != "nt":
+            key_tools = ["nmap", "nuclei", "gobuster", "sqlmap", "msfconsole", "hydra",
+                         "hashcat", "yara", "wireshark", "impacket-secretsdump"]
+            have = [t for t in key_tools if shutil.which(t)]
+            L.append(f"{ok if len(have) >= 5 else warn} Güvenlik araçları: {len(have)}/{len(key_tools)} "
+                     f"kurulu ({', '.join(have) or 'yok'})")
+            lab = load_json(LAB_SESSION_FILE, {})
+            L.append(f"   Aktif lab oturumu: {lab.get('target') if lab.get('active') else 'yok'}")
+        # Config / hafıza dosyaları
+        L.append(f"{ok if CONFIG_FILE.exists() else warn} Config: {CONFIG_FILE.name} "
+                 f"{'var' if CONFIG_FILE.exists() else 'YOK'} | Hafıza: "
+                 f"{'var' if MEMORY_FILE.exists() else 'yok'}")
+        # Mesh
+        L.append(f"   Mesh: {'açık' if getattr(self.app, 'team_token', '') else 'kapalı'} | "
+                 f"Ağdaki makineler: {len(getattr(self.app, 'peers', {}))}")
+        return "\n".join(L)
 
     def t_kali_tool(self, action, package=None):
         """Kali/Linux için salt okunur yerel tanılama; serbest komut çalıştırma sunmaz."""
