@@ -1,0 +1,15 @@
+anthropic
+SpeechRecognition
+pyaudio
+psutil
+pillow
+edge-tts
+pyautogui
+pyperclip
+pygetwindow
+python-pptx
+numpy
+imageio-ffmpeg
+yt-dlp
+vosk
+pywin32; sys_platform == "win32"

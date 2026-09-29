@@ -1,0 +1,12 @@
+J.A.R.V.I.S — Kali Linux üzerinde kaynak koddan çalıştırma
+
+1. Bu klasörü Kali bilgisayarına kopyala.
+2. Terminalde proje klasörüne gir ve: chmod +x install_kali.sh run_kali.sh
+3. Kurulum için: ./install_kali.sh
+4. Başlatmak için: ./run_kali.sh
+
+Gemini anahtarı config/api_keys.json içinde bu proje için ayarlanmıştır; uygulama açılırken tekrar sormaz. Bu dosyayı paylaşma. Güncel olmayan örnek talimatlardaki anahtar isteme adımı bu kurulumda gerekli değildir.
+
+Telefondan veya Windows'tan aynı Wi-Fi üzerinden bağlanmak için uygulamadaki IP adresini ve güvenlik kodunu kullan. Başka ağdan bağlanmak için cloudflared programını ayrıca kurup PATH'e ekle. Windows .exe ve Android .apk dosyaları ayrı paketlerdir; Kali için bu klasördeki kaynak kod çalıştırılır.
+
+Kali'de sohbet, mikrofon, telefon istekleri, görsel/video düzenleme ve genel masaüstü kontrolü çalışacak şekilde ayarlandı. Bazı program entegrasyonları Windows uygulamalarına özeldir.
