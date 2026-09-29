@@ -385,6 +385,110 @@ SİBER GÜVENLİK LABI (KALI / VMware):
   her komut onaydan geçer. Bir aşamanın çıktısını okuyup bir sonraki aşamayı ona göre planla (ör. nmap'te
   açık portları görüp ilgili servise yönel). Sonuçları kullanıcıya sade Türkçe yorumla.
 
+KALI ARAÇ/FRAMEWORK BİLGİ TABANI (ezbere bil — kullanıcı adını anmasa bile doğru aracı sen seç;
+her gerçek komut yine lab_test + onay + kapsam kuralına tabidir):
+- Bilgi toplama / OSINT: theHarvester, recon-ng, maltego, spiderfoot, sublist3r, amass, subfinder,
+  assetfinder, dnsrecon, dnsenum, fierce, dnsx, dmitry, whois, metagoofil, photon, holehe, sherlock,
+  shodan (cli), censys, google dork (dorkscout).
+- Ağ tarama / keşif: nmap (+NSE: vuln, safe, discovery, auth, brute), masscan, rustscan, zmap,
+  netdiscover, arp-scan, fping, hping3, unicornscan, naabu, nbtscan, onesixtyone (SNMP), snmpwalk,
+  enum4linux, enum4linux-ng, nbtscan-unixwiz.
+- Zafiyet tarama: nuclei (+templates), nikto, openvas/gvm, wpscan, joomscan, droopescan, cmseek,
+  vulscan, searchsploit (exploit-db), legion, sparta.
+- Web uygulama: burpsuite, zaproxy (OWASP ZAP), sqlmap, commix (komut enjeksiyonu), xsser, dalfox (XSS),
+  wfuzz, ffuf, feroxbuster, gobuster, dirb, dirsearch, wpscan, nikto, whatweb, wafw00f, arjun (parametre),
+  paramspider, gau, waybackurls, katana, hakrawler, jwt_tool, kiterunner, tplmap (SSTI), nosqlmap.
+- Exploit / sömürü çerçeveleri: Metasploit Framework (msfconsole, msfvenom, meterpreter, resource script),
+  routersploit, beef-xss (tarayıcı), SET (setoolkit — sosyal mühendislik), exploitdb/searchsploit,
+  getsploit, pwntools (exploit geliştirme), ropgadget, one_gadget.
+- Active Directory / Windows: impacket paketi (secretsdump, GetNPUsers/AS-REP, GetUserSPNs/Kerberoast,
+  psexec, wmiexec, smbexec, ntlmrelayx, mssqlclient, dcomexec, getST), crackmapexec/netexec (nxc),
+  bloodhound + neo4j + sharphound, ldapdomaindump, kerbrute, evil-winrm, responder, mitm6, certipy (ADCS),
+  petitpotam, coercer, rpcclient, samba tools (smbclient, smbmap), enum4linux-ng, adidnsdump.
+- Parola / hash kırma: hydra, medusa, ncrack, patator (çevrimiçi brute), john (John the Ripper),
+  hashcat, hashid, hash-identifier, name-that-hash, crackmapexec, cewl (wordlist), crunch, cupp,
+  wordlists (/usr/share/wordlists: rockyou, seclists), mentalist, princeprocessor.
+- Kablosuz (Wi-Fi/BT): aircrack-ng paketi (airmon-ng, airodump-ng, aireplay-ng, aircrack-ng), wifite,
+  kismet, reaver, bully (WPS), bettercap, hcxdumptool + hcxtools (PMKID), fern-wifi-cracker, mdk4,
+  bluetoothctl, bettercap ble, spooftooph.
+- MITM / sniffing: wireshark, tshark, tcpdump, ettercap, bettercap, responder, mitm6, dsniff,
+  driftnet, macchanger, arpspoof, sslstrip, mitmproxy.
+- Tersine mühendislik / pwn: ghidra, radare2 (r2), rizin/cutter, gdb + pwndbg/gef/peda, objdump, readelf,
+  strings, ltrace, strace, pwntools, ROPgadget, checksec, binwalk, upx.
+- Mobil: apktool, jadx, dex2jar, mobsf, frida, objection, apksigner, adb, drozer.
+- Adli analiz / forensics: volatility3, autopsy, sleuthkit, foremost, scalpel, binwalk, bulk-extractor,
+  exiftool, testdisk, photorec, dd, dcfldd, ddrescue, chkrootkit, rkhunter.
+- Steganografi / kripto: steghide, stegseek, zsteg, outguess, exiftool, binwalk, hashcat, john,
+  openssl, gpg, ciphey, xortool, RsaCtfTool, factordb.
+- C2 / kırmızı takım (yalnızca yetkili lab): metasploit, sliver, empire/starkiller, covenant, havoc,
+  mythic, villain, chisel/ligolo-ng/socat (pivot/tünel), proxychains4, nc/ncat (dinleyici).
+- Tünel / pivot / erişim: proxychains4, chisel, ligolo-ng, socat, sshuttle, plink, revsocks, iodine (DNS).
+- Konteyner / bulut: docker, trivy, kube-hunter, kube-bench, prowler, scoutsuite, pacu (AWS), cloudmapper.
+- Kullanıcı bir framework/kütüphane adı anarsa (Metasploit, Impacket, BloodHound, Aircrack, Nuclei, SET
+  vb.) doğrudan onunla; anmazsa aşamaya en uygun olanı sen seç. Aracın tam sözdizimi için gerekiyorsa
+  kali_tool(action="tool_help"), kurulu değilse kali_tool(action="install") kullan. Metasploit gibi
+  etkileşimli araçları msfconsole -q -x "use ...; set ...; run; exit" ya da resource script (-r) ile
+  tek komutta lab_test üzerinden çalıştır. Impacket betikleri genelde impacket-<ad> (ör. impacket-secretsdump).
+
+ÖZEL ARAÇ/SCRIPT YAZMA (kullanıcı "python ile … yap", "kendi aracını yaz", "script yaz" derse):
+- Kullanıcı hazır araç yerine kendi özel aracını isterse (ör. "Python ile Wi-Fi kırıcı yap", "port
+  tarayıcı yaz", "brute force scripti yaz", "kendi keylogger'ını yap") kodu write_project_file ile
+  bir dosyaya yaz (ör. proje="wifi_kirici", filename="main.py"), gerekli kütüphaneleri belirt
+  (scapy, pywifi, requests, paramiko, python-nmap, pycryptodome vb.), sonra run_project ile çalıştır
+  (pip_install ile paketleri kurdurabilirsin). Uzun/karmaşık aracı parçalara böl, birden çok dosya yaz.
+- Bu araçlar kullanıcının kendi güvenlik eğitimi ve YETKİLİ lab'i içindir. Ağ/hedef üzerinde gerçek
+  çalıştırma gerektiren kısımları (tarama, saldırı) yine lab_session + lab_test onay akışına ya da
+  kullanıcının kendi Kali makinesindeki kendi kablosuz arayüzüne yönelt; başkasının sistemine/ağına
+  yönelik kullanımı reddet ve kullanıcıya kendi lab'inde denemesini söyle.
+- Kod yazarken Kali'de hazır olan kütüphaneleri (yukarıdaki framework bilgi tabanı) ve Python
+  modüllerini kullan; kullanıcı isterse mevcut bir aracı (nmap, aircrack, metasploit) saran bir
+  otomasyon scripti de yazabilirsin.
+
+TAM OTOMATİK ZAFİYET DEĞERLENDİRMESİ (kullanıcı "şu sitenin/hedefin zafiyetlerini bul", "pentest yap",
+"tam tarama yap" derse — yalnızca kullanıcının KENDİ ya da açıkça İZİNLİ hedefi için):
+- Önce hedefi netleştir ve lab_session(action="start", target=<alan adı/IP>) ile oturumu aç. Hedef
+  kullanıcının kendi sitesi/lab'i ya da açıkça izinli (HackTheBox/THM/kendi kurduğu) olmalı; şüpheliyse sor.
+- Sonra aşağıdaki aşamaları SIRAYLA, her komutu lab_test ile (onay + kapsam kontrolü) çalıştır; her
+  aşamanın çıktısını oku, bulgulara göre sonraki aşamayı planla. Web hedefi için tipik zincir:
+  1) Keşif: nmap -sV -sC -p- <hedef> (açık portlar/servisler); whatweb <hedef> ve wafw00f <hedef>
+     (teknoloji + WAF); dnsrecon/subfinder ile alt alan adları.
+  2) İçerik keşfi: gobuster/ffuf/feroxbuster ile dizin ve dosya (SecLists wordlist'leri); robots.txt,
+     sitemap, .git, yedek dosyaları; parametreler için arjun/paramspider.
+  3) Zafiyet tarama: nuclei -u <hedef> (CVE + yanlış yapılandırma şablonları); nikto -h <hedef>;
+     CMS ise wpscan/joomscan/droopescan; SSL için sslscan/testssl.
+  4) Doğrulama/sömürü (izinli ise): tespit edilen girdi noktalarında sqlmap (SQLi), dalfox/xsser (XSS),
+     commix (komut enjeksiyonu); bilinen CVE için searchsploit → uygunsa msfconsole modülü.
+  5) Raporla: bulguları önem sırasına göre (kritik/yüksek/orta/düşük) sade Türkçe özetle; her bulguyu
+     kanıt (komut+çıktı) ve düzeltme önerisiyle ver. Çıktılar ~/JARVIS-Lab-Reports'a kaydedilir.
+- Uygun olduğunda aşamaları tek bir Python/bash otomasyon scriptine de yazıp (write_project_file) tek
+  seferde çalıştırabilirsin. Yıkıcı/DoS test yapma; yalnızca kullanıcının istediği ve izinli kapsamda kal.
+- Bulguyu doğrulamak için gerektiğinde aracın tam sözdizimini kali_tool(action="tool_help") ile al,
+  eksik aracı kali_tool(action="install") ile kur.
+
+ZARARLI ANALİZ + KARŞI-SAVUNMA (kullanıcı bir zararlı örneği/şüpheli dosyayı "çözümle", "analiz et",
+"zafiyetini bul", "bunu nasıl yakalarım/temizlerim" derse — SAVUNMA amaçlı; yeni zararlı ÜRETME):
+- Örnek İZOLE ortamda incelenir: ağı kapalı/host-only VM, dosyayı çalıştırmadan önce statik başla.
+  Analizi lab_test (ya da kullanıcının kendi analiz VM'i) üzerinden yürüt; çıktıyı rapora yaz.
+- 0) Örnek edinme (bilinen zararlıya ulaşma): Var olan bir aile için (ör. Carbanak, Emotet, WannaCry)
+     kullanıcıyı meşru tehdit istihbaratı kaynaklarına YÖNLENDİR ve o aile hakkında bilgi/IOC/rapor ver:
+     MalwareBazaar (abuse.ch), Malpedia, VirusShare, theZoo, MITRE ATT&CK grup sayfaları, tria.ge/Any.Run.
+     Örneği KULLANICI kendi izole analiz VM'ine indirir (host'a değil, ağı kapalı, parola korumalı arşiv,
+     asla host'ta çalıştırmadan). Sen canlı zararlıyı otomatik indirip host'ta işleme; kullanıcının izole
+     ortama koyduğu örneği analiz et. Bu var olan bir örneği edinmektir; yeni zararlı üretmek değil.
+- 1) Kimlik/statik: file, sha256/md5 → MalwareBazaar/VirusTotal (hash sorgusu, ÖRNEĞİ YÜKLEME - sadece
+     hash), strings/floss (gömülü URL/IP/komut/mutex), exiftool; PE için capa + import tablosu +
+     pecheck/pev; APK için apktool/jadx/mobsf (izinler, servisler, C2).
+  2) Dinamik (izole, snapshot'lı): dosya/registry/process/ağ davranışı, persistence, C2 adresleri.
+  3) Haritalama: bulguları MITRE ATT&CK tekniklerine bağla.
+  4) Zayıf nokta → karşı-savunma: sabit string/mutex/sertifika/C2/hard-coded anahtar gibi zaaflardan
+     YARA + Sigma tespit kuralı yaz; mümkünse temizleme/etkisizleştirme adımı (kill-switch, mutex ele
+     geçirme, C2 sinkholing önerisi, kaldırma scripti) çıkar. Gerekirse bunları write_project_file ile
+     bir savunma aracına (tarayıcı/temizleyici/IOC çıkarıcı) dönüştür.
+  5) Rapor: özet, IOC listesi, ATT&CK teknikleri, tespit kuralları, temizlik/sertleştirme önerileri —
+     profesyonel güvenlik raporu formatında, ~/JARVIS-Lab-Reports'a kaydet.
+- Bu akış var olan bir örneği ANLAMAK ve ona karşı SAVUNMA üretmek içindir. Sıfırdan yeni/tespit-atlatan
+  zararlı, phishing kiti ya da takip aracı yazma; bunları istenirse kibarca reddet ve savunma tarafına yönlendir.
+
 MAKİNELER ARASI (MESH: WINDOWS ↔ KALI ↔ TELEFON):
 - Kullanıcının birden çok JARVIS makinesi olabilir (Windows ana makine + Kali VM/ayrı makine). Aynı takım
   koduyla (team_token) ve aynı ağda birbirlerini otomatik bulurlar.
@@ -1313,20 +1417,41 @@ class Tools:
             return "Bu araç Kali/Linux içindir; JARVIS şu anda Linux'ta çalışmıyor."
         if action == "installed_tools":
             cats = {
-                "Keşif / Tarama": ["nmap", "masscan", "rustscan", "netdiscover", "arp-scan",
-                                    "fping", "dnsrecon", "dnsenum", "fierce", "theharvester",
-                                    "amass", "subfinder", "whatweb", "wafw00f"],
-                "Web": ["nikto", "gobuster", "ffuf", "feroxbuster", "dirb", "wpscan",
-                        "sqlmap", "commix", "xsser", "burpsuite", "zaproxy"],
-                "Parola / Brute": ["hydra", "medusa", "john", "hashcat", "crackmapexec",
-                                   "netexec", "patator", "cewl", "crunch"],
-                "Exploit / Post": ["msfconsole", "searchsploit", "impacket-scripts",
-                                   "responder", "evil-winrm", "enum4linux", "smbclient",
-                                   "smbmap", "ldapsearch"],
-                "Kablosuz / Ağ": ["aircrack-ng", "reaver", "bettercap", "ettercap",
-                                  "tcpdump", "tshark", "wireshark", "hcxdumptool"],
-                "Diğer / Yardımcı": ["metagoofil", "exiftool", "binwalk", "steghide",
-                                     "hashid", "gpg", "proxychains4", "tor", "git", "python3"],
+                "OSINT / Bilgi toplama": ["theharvester", "recon-ng", "spiderfoot", "sublist3r",
+                                          "amass", "subfinder", "assetfinder", "dnsrecon", "dnsenum",
+                                          "fierce", "dmitry", "whois", "metagoofil", "sherlock"],
+                "Keşif / Tarama": ["nmap", "masscan", "rustscan", "zmap", "netdiscover", "arp-scan",
+                                    "fping", "hping3", "naabu", "nbtscan", "snmpwalk", "onesixtyone"],
+                "Zafiyet tarama": ["nuclei", "nikto", "wpscan", "joomscan", "searchsploit",
+                                   "legion", "gvm", "vulscan"],
+                "Web": ["burpsuite", "zaproxy", "sqlmap", "commix", "xsser", "dalfox", "wfuzz",
+                        "ffuf", "feroxbuster", "gobuster", "dirb", "dirsearch", "whatweb", "wafw00f",
+                        "arjun", "katana", "hakrawler", "gau", "waybackurls", "jwt_tool"],
+                "Exploit / Framework": ["msfconsole", "msfvenom", "routersploit", "beef-xss",
+                                        "setoolkit", "searchsploit", "pwntools"],
+                "Active Directory / Windows": ["impacket-secretsdump", "impacket-GetNPUsers",
+                                               "impacket-GetUserSPNs", "impacket-psexec",
+                                               "impacket-ntlmrelayx", "netexec", "crackmapexec",
+                                               "bloodhound", "bloodhound-python", "ldapdomaindump",
+                                               "kerbrute", "evil-winrm", "responder", "mitm6",
+                                               "certipy", "rpcclient", "smbclient", "smbmap",
+                                               "enum4linux-ng", "ldapsearch"],
+                "Parola / Hash": ["hydra", "medusa", "ncrack", "patator", "john", "hashcat",
+                                  "hashid", "hash-identifier", "cewl", "crunch", "cupp"],
+                "Kablosuz": ["aircrack-ng", "airmon-ng", "airodump-ng", "wifite", "kismet",
+                             "reaver", "bully", "bettercap", "hcxdumptool", "hcxpcapngtool", "mdk4"],
+                "MITM / Sniffing": ["wireshark", "tshark", "tcpdump", "ettercap", "responder",
+                                    "mitm6", "dsniff", "macchanger", "mitmproxy"],
+                "Tersine müh. / Pwn": ["ghidra", "radare2", "r2", "cutter", "gdb", "objdump",
+                                       "readelf", "ltrace", "strace", "checksec", "ROPgadget"],
+                "Mobil": ["apktool", "jadx", "d2j-dex2jar", "mobsf", "frida", "objection", "adb", "drozer"],
+                "Adli / Steg": ["volatility3", "autopsy", "foremost", "scalpel", "binwalk",
+                                "exiftool", "testdisk", "photorec", "steghide", "stegseek", "zsteg"],
+                "C2 / Pivot / Tünel": ["sliver-server", "powershell-empire", "starkiller", "havoc",
+                                       "chisel", "ligolo-ng", "socat", "proxychains4", "ncat", "sshuttle"],
+                "Konteyner / Bulut": ["docker", "trivy", "kube-hunter", "kube-bench", "prowler",
+                                      "scoutsuite", "pacu"],
+                "Yardımcı": ["gpg", "openssl", "tor", "git", "python3", "seclists"],
             }
             lines = ["Kurulu Kali araçları (PATH kontrolü):"]
             for cat, names in cats.items():
@@ -3047,6 +3172,121 @@ class OfflineBrain:
 BG, PANEL, FG, ACCENT, DIM = "#0a0f16", "#111a24", "#d6e4f0", "#2fd4ff", "#6b8499"
 
 
+def show_cyber_intro(root, on_done=None, seconds=4.2):
+    """Linux'ta açılışta 'SİBER TİTAN' efektli yazı + Anonymous maskesi gösterir."""
+    import random
+    GREEN, DARKGREEN, PALE = "#39ff14", "#0b3d0b", "#e8f0e8"
+    try:
+        sp = tk.Toplevel(root)
+        sp.overrideredirect(True)
+        sp.configure(bg="#03060a")
+        W, H = 680, 460
+        sw, sh = sp.winfo_screenwidth(), sp.winfo_screenheight()
+        sp.geometry(f"{W}x{H}+{(sw - W) // 2}+{(sh - H) // 3}")
+        sp.attributes("-topmost", True)
+        cv = tk.Canvas(sp, width=W, height=H, bg="#03060a", highlightthickness=0)
+        cv.pack()
+
+        # — arka plan: matrix yağmuru —
+        cols = list(range(10, W, 18))
+        drops = {x: random.randint(-H, 0) for x in cols}
+        chars = "01アイウカサ¥#@%&<>*+=ﾊﾐﾋｷ"
+        rain_items = []
+
+        def rain():
+            if not sp.winfo_exists():
+                return
+            for it in rain_items:
+                cv.delete(it)
+            rain_items.clear()
+            for x in cols:
+                y = drops[x]
+                for k in range(6):
+                    yy = y - k * 16
+                    if 0 < yy < H:
+                        c = GREEN if k == 0 else DARKGREEN
+                        rain_items.append(cv.create_text(x, yy, text=random.choice(chars),
+                                                         fill=c, font=("Courier", 12, "bold")))
+                drops[x] = y + 18 if y < H + 40 else random.randint(-H // 2, 0)
+            for it in mask_items + text_items:
+                cv.tag_raise(it)
+            sp.after(90, rain)
+
+        # — Anonymous (Guy Fawkes) maskesi, vektörel —
+        cx, cy = W // 2, 168
+        mask_items = []
+
+        def M(item):
+            mask_items.append(item)
+            return item
+
+        # yüz (sivri çeneli soluk şekil)
+        M(cv.create_polygon(cx-92, cy-70, cx-70, cy-96, cx, cy-104, cx+70, cy-96, cx+92, cy-70,
+                            cx+86, cy-8, cx+64, cy+44, cx+26, cy+88, cx, cy+104, cx-26, cy+88,
+                            cx-64, cy+44, cx-86, cy-8, fill=PALE, outline=GREEN, width=2, smooth=True))
+        # alın çizgisi
+        M(cv.create_line(cx, cy-96, cx, cy-60, fill="#c8d2c8", width=2))
+        # kaşlar (yukarı açılı)
+        M(cv.create_line(cx-64, cy-40, cx-20, cy-28, fill="#1a1a1a", width=4))
+        M(cv.create_line(cx+64, cy-40, cx+20, cy-28, fill="#1a1a1a", width=4))
+        # gözler (eğik badem)
+        M(cv.create_polygon(cx-58, cy-22, cx-22, cy-14, cx-26, cy+2, cx-56, cy-6,
+                            fill="#101010", outline="", smooth=True))
+        M(cv.create_polygon(cx+58, cy-22, cx+22, cy-14, cx+26, cy+2, cx+56, cy-6,
+                            fill="#101010", outline="", smooth=True))
+        # yanaklar (hafif pembe)
+        M(cv.create_oval(cx-66, cy+16, cx-42, cy+40, fill="#f0c8c8", outline=""))
+        M(cv.create_oval(cx+42, cy+16, cx+66, cy+40, fill="#f0c8c8", outline=""))
+        # bıyık (yukarı kıvrık iki yay)
+        M(cv.create_arc(cx-46, cy+24, cx-4, cy+64, start=20, extent=140, style="arc",
+                        outline="#1a1a1a", width=3))
+        M(cv.create_arc(cx+4, cy+24, cx+46, cy+64, start=20, extent=140, style="arc",
+                        outline="#1a1a1a", width=3))
+        # gülümseme
+        M(cv.create_arc(cx-40, cy+30, cx+40, cy+86, start=200, extent=140, style="arc",
+                        outline="#101010", width=3))
+        # keçi sakalı
+        M(cv.create_polygon(cx-10, cy+80, cx+10, cy+80, cx, cy+104, fill="#1a1a1a", outline=""))
+
+        # — SİBER TİTAN yazısı (glow + daktilo efekti) —
+        text_items = []
+        full = "SİBER TİTAN"
+        ty = 348
+
+        def glow_text(s):
+            for it in text_items:
+                cv.delete(it)
+            text_items.clear()
+            for dx, dy, col in ((2, 2, DARKGREEN), (-2, 2, DARKGREEN), (0, 0, GREEN)):
+                text_items.append(cv.create_text(cx + dx, ty + dy, text=s, fill=col,
+                                                 font=("Courier", 34, "bold")))
+            text_items.append(cv.create_text(cx, 392, text="pentest • anonim • güç sende",
+                                             fill="#2a8f2a", font=("Courier", 12)))
+
+        def typewriter(i=0):
+            if not sp.winfo_exists():
+                return
+            glow_text(full[:i])
+            if i < len(full):
+                sp.after(120, lambda: typewriter(i + 1))
+
+        rain()
+        typewriter()
+
+        def close():
+            if sp.winfo_exists():
+                sp.destroy()
+            if on_done:
+                on_done()
+        sp.after(int(seconds * 1000), close)
+        # tıklayınca da geç
+        cv.bind("<Button-1>", lambda e: close())
+    except Exception as e:
+        log(f"cyber intro atlandı: {e}")
+        if on_done:
+            on_done()
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -3070,6 +3310,11 @@ class App:
         root.geometry("900x680")
         root.configure(bg=BG)
         root.minsize(520, 420)
+        if os.name != "nt":          # Linux'ta siber açılış efekti (SİBER TİTAN + Anonymous maskesi)
+            try:
+                show_cyber_intro(root)
+            except Exception:
+                pass
 
         top = tk.Frame(root, bg=BG)
         top.pack(fill="x", padx=16, pady=(14, 6))
