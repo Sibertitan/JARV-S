@@ -5,10 +5,12 @@ psutil
 pillow
 edge-tts
 pyautogui
+pyperclip
 pygetwindow
-pywin32
 python-pptx
 numpy
 imageio-ffmpeg
 yt-dlp
 vosk
+PySocks
+pywin32; sys_platform == "win32"

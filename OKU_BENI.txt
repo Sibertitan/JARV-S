@@ -1,17 +1,14 @@
-﻿J.A.R.V.I.S - UCRETSIZ SURUM (Google Gemini ile calisir)
+J.A.R.V.I.S — Kali Linux üzerinde kaynak koddan çalıştırma
 
-KURULUM (2 dakika):
-1) JARVIS Ucretsiz.exe dosyasina cift tikla.
-   ("Windows korudu" uyarisi cikarsa: Daha fazla bilgi -> Yine de calistir)
-2) Acilan kutuya UCRETSIZ Gemini API anahtarini yapistir:
-   - https://aistudio.google.com/apikey adresine git
-   - Google ile giris yap -> "Create API key" -> anahtari kopyala
-   - JARVIS'teki kutuya yapistir -> Tamam
-3) Hazir. Konusarak ya da yazarak kullan.
+1. Bu klasörü Kali bilgisayarına kopyala.
+2. Terminalde proje klasörüne gir ve: chmod +x install_kali.sh run_kali.sh
+3. Kurulum için: ./install_kali.sh
+4. Başlatmak için: ./run_kali.sh
 
-ONEMLI:
-- "offline" ve "config" klasorleri exe ile ayni yerde kalmali, silme.
-- Anahtarin sadece senin config klasorunde tutulur, kimseyle paylasilmaz.
-- Herkes kendi ucretsiz Gemini anahtarini girer.
+Gemini anahtarı config/api_keys.json içinde tutulur. Bu dosya Git'e eklenmediği için yeni bir kopyada olmayabilir; yoksa uygulama ilk açılışta ücretsiz Gemini anahtarını ister ve kaydeder (bir daha sormaz). Ücretsiz anahtarı https://aistudio.google.com/apikey adresinden al. Bu dosyayı paylaşma.
 
-Gelistiren: Ali Ihsan Kahraman
+Anonim mod: "anonim mod aç" web isteklerini Tor'dan geçirir, "yeni ip" çıkış IP'sini değiştirir. Kali araçları için "kurulu araçlar" de; eksik aracı onayınla kurar. Gerçek testler izinli lab hedefinde lab_test ile, her komut onayıyla çalışır.
+
+Telefondan veya Windows'tan aynı Wi-Fi üzerinden bağlanmak için uygulamadaki IP adresini ve güvenlik kodunu kullan. Başka ağdan bağlanmak için cloudflared programını ayrıca kurup PATH'e ekle. Windows .exe ve Android .apk dosyaları ayrı paketlerdir; Kali için bu klasördeki kaynak kod çalıştırılır.
+
+Kali'de sohbet, mikrofon, telefon istekleri, görsel/video düzenleme ve genel masaüstü kontrolü çalışacak şekilde ayarlandı. Bazı program entegrasyonları Windows uygulamalarına özeldir.

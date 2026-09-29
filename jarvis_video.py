@@ -18,14 +18,15 @@ VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".3gp"}
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac"}
 def _pick_font():
     for f in ["C:/Windows/Fonts/ariblk.ttf",   # Arial Black — meme/altyazı için en okunaklı
-              "C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf"]:
+              "C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]:
         if os.path.exists(f):
             return f
     return "C:/Windows/Fonts/arial.ttf"
 
 
 FONT = _pick_font()
-NO_WINDOW = subprocess.CREATE_NO_WINDOW
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 SIZES = {"vertical": (1080, 1920), "square": (1080, 1080), "horizontal": (1920, 1080)}
 COLORS = {
@@ -39,6 +40,8 @@ TEXT_SIZES = {"small": 0.035, "medium": 0.05, "large": 0.07}
 
 
 def _known_folder(csidl):
+    if os.name != "nt":
+        return None
     buf = ctypes.create_unicode_buffer(260)
     ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf)
     return Path(buf.value) if buf.value else None

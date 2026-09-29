@@ -10,7 +10,9 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff"}
 FONT_BOLD = next((f for f in ["C:/Windows/Fonts/ariblk.ttf", "C:/Windows/Fonts/arialbd.ttf",
-                              "C:/Windows/Fonts/segoeuib.ttf"] if os.path.exists(f)), "C:/Windows/Fonts/arial.ttf")
+                              "C:/Windows/Fonts/segoeuib.ttf",
+                              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+                  if os.path.exists(f)), None)
 
 
 def _pictures():
@@ -21,7 +23,7 @@ def _pictures():
             p = Path(winreg.QueryValueEx(k, "My Pictures")[0])
             if p.is_absolute() and p.exists():
                 return p
-    except OSError:
+    except (OSError, ImportError, AttributeError):
         pass
     for c in (Path.home() / "OneDrive" / "Resimler", Path.home() / "OneDrive" / "Pictures",
               Path.home() / "Pictures", Path.home() / "Resimler"):
@@ -114,18 +116,22 @@ def edit_image(path, operations=None, output_format="png", out_name=None):
     return _save(img, out_name or (Path(path).stem + "_edit"), output_format)
 
 
+def _font(size):
+    return ImageFont.truetype(FONT_BOLD, size) if FONT_BOLD else ImageFont.load_default()
+
+
 def _fit_font(draw, text, max_w, start):
     size = start
     while size > 12:
-        font = ImageFont.truetype(FONT_BOLD, size)
+        font = _font(size)
         if draw.textlength(text, font=font) <= max_w:
             return font
         size -= 2
-    return ImageFont.truetype(FONT_BOLD, 12)
+    return _font(12)
 
 
 def _draw_text(draw, text, cx, y, max_w, size, fill="white", outline="black"):
-    font = ImageFont.truetype(FONT_BOLD, size)
+    font = _font(size)
     words_per = max(6, int(max_w / (size * 0.6)))
     for line in textwrap.wrap(text, words_per):
         w = draw.textlength(line, font=font)
