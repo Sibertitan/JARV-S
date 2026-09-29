@@ -3765,15 +3765,26 @@ class App:
             if e.code in (401, 403):
                 return f"{n} API anahtarı geçersiz ya da yetkisiz. Ayarlardan/config'ten kontrol et."
             if e.code in (500, 502, 503, 504):
-                return f"{n} sunucusu şu an meşgul. Birazdan tekrar dene."
+                return self._provider_fallback(text, f"{n} sunucusu şu an meşgul")
             return f"{n} isteği reddetti (HTTP {e.code}). Anahtarını kontrol et."
         except Exception as e:
             log(f"{self.provider} hatası: {e!r}")
-            return "İnternet bağlantısı zayıf ya da yanıt gelmedi. Bağlantını kontrol edip tekrar dener misin?"
+            return self._provider_fallback(text, "Çevrimiçi sağlayıcıya ulaşılamadı")
         self.chat_history.append({"role": "assistant", "content": reply})
         if self.provider == "gemini":
             reply += note_gemini_call()
         return reply
+
+    def _provider_fallback(self, text, reason):
+        """Çevrimiçi sağlayıcı geçici olarak başarısız olursa çevrimdışı beyne düş (güvenilirlik)."""
+        try:
+            offline = self._offline(text)
+        except Exception as e:
+            log(f"fallback çevrimdışı hatası: {e!r}")
+            offline = None
+        if offline and offline != OFFLINE_HELP:
+            return f"({reason}, çevrimdışı yanıtla devam ediyorum)\n{offline}"
+        return f"{reason}. Birazdan tekrar dene ya da 'çevrimdışına geç' de."
 
     def _offline(self, text):
         """İnternetsizken: önce komut çözücü, olmazsa yerel sohbet modeli."""
