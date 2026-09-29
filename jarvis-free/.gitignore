@@ -1,5 +1,6 @@
 # Kişisel/gizli — depoya girmesin
 config/api_keys.json
+config/lab_config.json
 memory/
 jarvis_log.txt
 hata.txt

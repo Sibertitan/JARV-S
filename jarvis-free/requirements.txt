@@ -12,4 +12,5 @@ numpy
 imageio-ffmpeg
 yt-dlp
 vosk
+PySocks
 pywin32; sys_platform == "win32"

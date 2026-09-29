@@ -5,7 +5,9 @@ J.A.R.V.I.S — Kali Linux üzerinde kaynak koddan çalıştırma
 3. Kurulum için: ./install_kali.sh
 4. Başlatmak için: ./run_kali.sh
 
-Gemini anahtarı config/api_keys.json içinde bu proje için ayarlanmıştır; uygulama açılırken tekrar sormaz. Bu dosyayı paylaşma. Güncel olmayan örnek talimatlardaki anahtar isteme adımı bu kurulumda gerekli değildir.
+Gemini anahtarı config/api_keys.json içinde tutulur. Bu dosya Git'e eklenmediği için yeni bir kopyada olmayabilir; yoksa uygulama ilk açılışta ücretsiz Gemini anahtarını ister ve kaydeder (bir daha sormaz). Ücretsiz anahtarı https://aistudio.google.com/apikey adresinden al. Bu dosyayı paylaşma.
+
+Anonim mod: "anonim mod aç" web isteklerini Tor'dan geçirir, "yeni ip" çıkış IP'sini değiştirir. Kali araçları için "kurulu araçlar" de; eksik aracı onayınla kurar. Gerçek testler izinli lab hedefinde lab_test ile, her komut onayıyla çalışır.
 
 Telefondan veya Windows'tan aynı Wi-Fi üzerinden bağlanmak için uygulamadaki IP adresini ve güvenlik kodunu kullan. Başka ağdan bağlanmak için cloudflared programını ayrıca kurup PATH'e ekle. Windows .exe ve Android .apk dosyaları ayrı paketlerdir; Kali için bu klasördeki kaynak kod çalıştırılır.
 

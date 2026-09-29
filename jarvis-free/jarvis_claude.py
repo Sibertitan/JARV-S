@@ -12,6 +12,7 @@ import asyncio
 import base64
 import ctypes
 import io
+import ipaddress
 import json
 import os
 import platform
@@ -46,6 +47,8 @@ MEMORY_FILE = BASE / "memory" / "memory.json"
 REMINDERS_FILE = BASE / "memory" / "reminders.json"
 SCHEDULED_FILE = BASE / "memory" / "scheduled.json"
 CONTACTS_FILE = BASE / "memory" / "contacts.json"
+LAB_CONFIG_FILE = BASE / "config" / "lab_config.json"
+LAB_SESSION_FILE = BASE / "memory" / "lab_session.json"
 
 MODEL = "claude-opus-5-5"
 TTS_VOICE = "tr-TR-AhmetNeural"
@@ -57,7 +60,7 @@ MAX_STEPS = 80                 # bir istekte en fazla araç turu
 
 def load_json(path, default):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return default
 
@@ -65,6 +68,115 @@ def load_json(path, default):
 def save_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ─────────────────── Gemini günlük kota takibi ───────────────────
+# Ücretsiz Gemini Flash katmanı günde sınırlı sayıda istek verir. Kullanıcı
+# sınıra yaklaştığında uyarmak için gün bazında istek sayısını tutarız.
+USAGE_FILE = BASE / "memory" / "gemini_usage.json"
+GEMINI_DAILY_LIMIT = 200   # ücretsiz Flash katmanı için güvenli günlük tahmin
+GEMINI_WARN_AT = 0.80      # bu orana ulaşınca uyar
+
+
+def note_gemini_call():
+    """Bir Gemini kullanıcı isteğini sayar; sınıra yaklaşınca/dolunca uyarı metni döndürür (yoksa '')."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    u = load_json(USAGE_FILE, {})
+    if u.get("date") != today:
+        u = {"date": today, "count": 0, "warned": False}
+    u["count"] = int(u.get("count", 0)) + 1
+    limit = int(u.get("limit") or GEMINI_DAILY_LIMIT)
+    warn = ""
+    if u["count"] >= limit:
+        warn = (f"\n\n⚠️ Bugünkü ücretsiz Gemini limitine ({limit} istek) ulaştın. "
+                "Google gece yarısı (Pasifik saati) sıfırlayana kadar isteklerin reddedilebilir. "
+                "İstersen çevrimdışı moda geçebilirim: 'çevrimdışına geç' de.")
+    elif not u.get("warned") and u["count"] >= limit * GEMINI_WARN_AT:
+        u["warned"] = True
+        warn = (f"\n\n⚠️ Günlük ücretsiz Gemini kotanın %{int(GEMINI_WARN_AT*100)}'ine ulaştın "
+                f"({u['count']}/{limit} istek). Sınıra yaklaşıyorsun.")
+    save_json(USAGE_FILE, u)
+    return warn
+
+
+# ─────────────────── Tor anonim mod (kendi web isteklerimiz için) ───────────────────
+# JARVIS'in kendi çıkış isteklerini (Gemini, hava durumu, arama vb.) yerel Tor
+# SOCKS5 proxy'sinden geçirir. "Yeni IP" için Tor'a NEWNYM sinyali gönderir.
+# Yalnızca giden isteklerimizi etkiler; telefon sunucusu (gelen) bundan etkilenmez.
+ANON = {"on": False}
+TOR_SOCKS = ("127.0.0.1", 9050)
+TOR_CONTROL = ("127.0.0.1", 9051)
+
+
+def tor_socks_ready():
+    import socket
+    try:
+        s = socket.create_connection(TOR_SOCKS, timeout=2)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def net_urlopen(req, timeout=90):
+    """Anonim mod açıksa isteği Tor SOCKS5 üzerinden, değilse normal açar."""
+    if ANON["on"]:
+        try:
+            import socks  # PySocks
+            from sockshandler import SocksiPyHandler
+            opener = urllib.request.build_opener(
+                SocksiPyHandler(socks.SOCKS5, TOR_SOCKS[0], TOR_SOCKS[1], rdns=True))
+            return opener.open(req, timeout=timeout)
+        except ImportError:
+            log("PySocks kurulu değil; anonim istek normal bağlantıya düştü")
+        except Exception as e:
+            log(f"Tor üzerinden istek başarısız ({e}); normal bağlantı deneniyor")
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _tor_cookie_hex():
+    for p in ("/run/tor/control.authcookie", "/var/run/tor/control.authcookie"):
+        try:
+            return open(p, "rb").read().hex()
+        except OSError:
+            continue
+    return None
+
+
+def tor_new_identity():
+    """Tor'dan yeni devre (yeni çıkış IP'si) ister. (başarı, mesaj) döndürür."""
+    import socket
+    try:
+        with socket.create_connection(TOR_CONTROL, timeout=5) as c:
+            c.settimeout(5)
+            cookie = _tor_cookie_hex()
+            c.sendall((f"AUTHENTICATE {cookie}\r\n" if cookie else "AUTHENTICATE \"\"\r\n").encode())
+            if b"250" not in c.recv(256):
+                return False, ("Tor kontrol portu kimlik doğrulaması reddetti. "
+                               "install_kali.sh'i yeniden çalıştır (torrc'yi ayarlar).")
+            c.sendall(b"SIGNAL NEWNYM\r\n")
+            ok = b"250" in c.recv(256)
+            return ok, ("Yeni Tor devresi alındı — çıkış IP'n değişti." if ok
+                        else "Tor NEWNYM sinyali reddedildi.")
+    except OSError as e:
+        return False, (f"Tor kontrol portuna (9051) bağlanılamadı: {e}. "
+                       "Tor kurulu ve ControlPort açık mı? install_kali.sh bunu ayarlar.")
+
+
+def tor_exit_ip():
+    """Mevcut Tor çıkış IP'sini döndürür (doğrulama için)."""
+    try:
+        req = urllib.request.Request("https://check.torproject.org/api/ip",
+                                     headers={"User-Agent": "curl"})
+        old = ANON["on"]
+        ANON["on"] = True
+        try:
+            data = json.loads(net_urlopen(req, timeout=20).read())
+        finally:
+            ANON["on"] = old
+        return data.get("IP", "?"), bool(data.get("IsTor"))
+    except Exception as e:
+        return f"(alınamadı: {e})", False
 
 
 def log(msg):
@@ -241,16 +353,47 @@ POWERPOINT:
 SİBER GÜVENLİK LABI (KALI / VMware):
 - Kullanıcı siber güvenlik öğrencisi; VMware Workstation'daki kendi Kali Linux makinesinde, kendi
   lab ortamında yetkili testler yapıyor ve portföyü için GitHub'da paylaşıyor.
+- Kali Linux'un yerel durumunu görmek için kali_tool kullan: installed_tools, system_info,
+  network_info, updates veya package_info. Bu araç salt okunurdur; ağ taraması veya paket kurulumu yapmaz.
+- Siber güvenlik çalışmasında kullanıcı hedefi belirtmediyse sor. Hedefi verince lab_session(action="start",
+  target=...) ile oturumu aç; Jarvis hedefi config'e kendisi ekler. Kullanıcının istediği komutu
+  lab_test(command=...) ile çalıştır. Komut aktif hedefi açıkça içermeli ve her seferinde onaylanmalı.
+  Gemini ücretsiz modunda da aynı araç çağrısı akışını kullan. Test komutu için shell_run veya ekran
+  üzerinden terminal kullanma.
+- Oturum çıktıları ~/JARVIS-Lab-Reports altında raporlanır. lab_config.json ayarlandıysa, temel gizli
+  bilgi taramasından geçen raporlar yalnızca özel GitHub deposuna otomatik aktarılır. Oturum bitince
+  lab_session(action="stop") çağır.
 - "Kali'yi aç" gibi bir istekte vmware_control(action="start", name="kali") kullan. Açılınca
-  bilgisayar kontrolüyle (screenshot, left_click, type, key) Kali'nin terminaline kullanıcının
-  söylediği komutları yaz, Enter'la çalıştır, çıktıyı ekrandan oku ve kullanıcıya yorumla.
+  yetkili test komutlarını lab_test ile Kali'nin yerel Bash terminalinde çalıştır; çıktıyı rapora
+  kaydet ve kullanıcıya yorumla. Ekran kontrolünü yalnızca gerektiğinde görsel masaüstü işleri için kullan.
 - YALNIZCA kullanıcının açıkça söylediği komutları çalıştır. Testler kullanıcının kendi lab
   makinelerine ya da açıkça izinli/eğitim hedeflerine (HackTheBox, TryHackMe, kendi kurduğu VM'ler)
   yönelik olmalı. Hedef belirsizse ya da başka birinin sistemine benziyorsa çalıştırmadan kullanıcıya
   sor. Kendi başına saldırgan komut üretme; kullanıcı ne derse onu uygula ve açıkla.
-- Kullanıcı sonuçları GitHub'da paylaşmak isterse: çıktılardan düzenli bir rapor/README hazırla
-  (yapılan test, komut, bulgu, ekran çıktısı özeti) ve shell_run ile git komutlarıyla yükle
-  (git her komutta onay ister).
+- shell_run Windows'ta PowerShell kullanır; Kali/Linux komutlarında yalnızca lab_test akışını kullan.
+- KALI ARAÇLARINI EN İYİ ŞEKİLDE KULLAN: İşe kali_tool(action="installed_tools") ile başla, hangi
+  araçların kurulu olduğunu gör. Aşamaya göre doğru aracı seç:
+  1) Keşif: nmap (-sV -sC -p-), host keşfi için netdiscover/arp-scan, DNS için dnsrecon/dnsenum.
+  2) Web: whatweb/wafw00f ile parmak izi, gobuster/ffuf/feroxbuster ile dizin-dosya, nikto ile zafiyet,
+     WordPress ise wpscan, enjeksiyon için sqlmap.
+  3) SMB/AD: enum4linux, smbmap, smbclient, crackmapexec/netexec, ldapsearch.
+  4) Parola: hydra/medusa (çevrimiçi), john/hashcat (çevrimdışı), wordlist için /usr/share/wordlists.
+  5) Exploit: searchsploit ile arama, gerekiyorsa msfconsole.
+- Aracın doğru sözdizimini bilmiyorsan önce kali_tool(action="tool_help", package="araç") ile kullanımını al.
+- İhtiyaç duyulan araç kurulu değilse kali_tool(action="install", package="araç") ile kur (kullanıcı onaylar).
+- Her gerçek tarama/test komutunu lab_test ile çalıştır: komut aktif hedefi içermeli, kapsam dışına çıkma,
+  her komut onaydan geçer. Bir aşamanın çıktısını okuyup bir sonraki aşamayı ona göre planla (ör. nmap'te
+  açık portları görüp ilgili servise yönel). Sonuçları kullanıcıya sade Türkçe yorumla.
+
+MAKİNELER ARASI (MESH: WINDOWS ↔ KALI ↔ TELEFON):
+- Kullanıcının birden çok JARVIS makinesi olabilir (Windows ana makine + Kali VM/ayrı makine). Aynı takım
+  koduyla (team_token) ve aynı ağda birbirlerini otomatik bulurlar.
+- Kullanıcı "Kali'de … yap", "Windows'ta … aç", "öbür bilgisayarda …" derse remote_jarvis(target, command)
+  ile o makineye ilet ve dönen yanıtı kullanıcıya aktar. Windows'a özel işler (Office, MSI ışık, VMware)
+  Windows makinesinde; Kali tarama/araç işleri Kali makinesinde yapılır — doğru makineye yönlendir.
+- Ağdaki makineleri görmek için remote_jarvis(target="list") ya da mesh(action="status"). Bağlantı yoksa
+  mesh(action="setup") ile kod üretip kullanıcıya diğer makineye yazmasını söyle.
+- Telefon uygulaması bir makineye bağlanır; o makine gerekince komutu mesh üzerinden diğerine iletir.
 
 VİDEO DÜZENLEME VE PAYLAŞMA:
 - Kullanıcı video düzenlemek isterse: find_videos ile videoyu bul, review_video ile kareleri gör
@@ -382,6 +525,14 @@ TOOLS = [
      "input_schema": _obj({"name": {"type": "string"}}, ["name"])},
     {"name": "sys_info", "description": "Sistem bilgisi verir: time, battery, cpu, ram, disk veya all.",
      "input_schema": _obj({"kind": {"type": "string", "enum": ["time", "battery", "cpu", "ram", "disk", "all"]}}, ["kind"])},
+    {"name": "kali_tool", "description": "Kali/Linux yerel yardımcı aracı: installed_tools (kurulu Kali araçlarını kategorilere göre listeler; hangi aracın var/yok olduğunu gösterir), system_info, network_info, updates, package_info (bir APT paketinin bilgisi), tool_help (bir aracın --help/kullanım çıktısını verir, doğru sözdizimi için), install (eksik bir Kali aracını/paketini apt ile kurar — kullanıcı onayı gerektirir). installed_tools/system_info/network_info/updates/package_info/tool_help salt okunurdur. Ağ taraması yapmaz; yetkili tarama/testler lab_test ile yapılır.",
+     "input_schema": _obj({"action": {"type": "string", "enum": ["installed_tools", "system_info", "network_info", "updates", "package_info"]},
+                           "package": {"type": "string", "description": "package_info için APT paket adı"}}, ["action"])},
+    {"name": "lab_session", "description": "Yetkili Kali laboratuvar oturumu. Kullanıcı hedefi söylediğinde Jarvis bu hedefi kendisi config/lab_config.json içindeki allowed_targets listesine ekler; kullanıcıdan JSON düzenlemesini istemez. status/stop oturumu gösterir veya kapatır. Aktif oturum olmadan lab_test çalışmaz. Gemini ve Claude araç çağrılarında kullanılabilir.",
+     "input_schema": _obj({"action": {"type": "string", "enum": ["start", "status", "stop"]},
+                           "target": {"type": "string", "description": "start için izinli laboratuvar IP'si/alan adı"}}, ["action"])},
+    {"name": "lab_test", "description": "Aktif, izinli Kali laboratuvarı hedefinde kullanıcının istediği test komutunu çalıştırır. Komut çalışmadan önce tam komut ve hedef onay penceresinde gösterilir; hedef komutta da açıkça bulunmalıdır. Çıktı ve komut yerel rapora kaydedilir, yapılandırıldıysa özel GitHub deposuna otomatik aktarılır. Yalnızca kullanıcının kendi veya açıkça izinli eğitim hedefleri.",
+     "input_schema": _obj({"command": {"type": "string", "description": "Kullanıcının açıkça istediği terminal komutu"}}, ["command"])},
     {"name": "get_weather", "description": "Bir şehrin güncel hava durumunu ve kısa tahminini verir.",
      "input_schema": _obj({"location": {"type": "string"}}, ["location"])},
     {"name": "browser_control", "description": "Tarayıcıda URL açar ya da Google'da arama yapar.",
@@ -401,7 +552,7 @@ TOOLS = [
                            "mood": {"type": "string"}, "loop": {"type": "boolean", "description": "sürekli tekrar çal"}}, ["genre"])},
     {"name": "control_media", "description": "Çalan medyayı kontrol eder veya ses düzeyini değiştirir.",
      "input_schema": _obj({"action": {"type": "string", "enum": ["play_pause", "next", "previous", "stop", "volume_up", "volume_down", "mute"]}}, ["action"])},
-    {"name": "shell_run", "description": "PowerShell komutu çalıştırır ve çıktısını döndürür. Kullanıcı her komutu çalıştırmadan önce onaylar.",
+    {"name": "shell_run", "description": "Windows PowerShell'de onaylı sistem komutu çalıştırır. Kali/Linux siber güvenlik komutları bu araçla çalıştırılmaz; izinli laboratuvar oturumunda lab_test kullan.",
      "input_schema": _obj({"command": {"type": "string"}}, ["command"])},
     {"name": "github",
      "description": "GitHub işlemleri (git + gh CLI). action: auth (oturum durumu), push (bir projeyi GitHub'a yükler - repo oluşturur, commit'ler, gönderir), commit (yerel commit). project: Belgeler\\JARVIS Projeler altındaki proje adı ya da tam klasör yolu. repo: depo adı. private: gizli mi (varsayılan public).",
@@ -455,9 +606,39 @@ TOOLS = [
          "output_name": {"type": "string"},
      }, ["clips"])},
     {"name": "vmware_control",
-     "description": "VMware Workstation sanal makinelerini yönetir. list: makineleri ve çalışanları listeler; start: verilen makineyi (name ile) açar ve penceresini gösterir; stop: kapatır. Kali gibi bir makineyi açtıktan sonra içindeki terminale komutları bilgisayar kontrolüyle (screenshot/type) yazarsın.",
-     "input_schema": _obj({"action": {"type": "string", "enum": ["list", "start", "stop"]},
-                           "name": {"type": "string", "description": "Makine adının bir parçası, ör. kali"}}, ["action"])},
+     "description": ("VMware Workstation sanal makinelerini yönetir. list: makineleri ve çalışanları listeler; "
+                     "start: verilen makineyi (name ile) açar ve penceresini gösterir; stop: kapatır; "
+                     "create: yeni bir sanal makine oluşturur. Windows 11 kurmak için create kullan: name (makine adı) "
+                     "ve iso (Windows 11 .iso dosyasının tam yolu) ver; istersen ram_mb, disk_gb, cpu ver. "
+                     "create Windows 11 için gereken UEFI + sanal TPM 2.0 + Secure Boot ayarlarını otomatik yapar, "
+                     "diski oluşturur ve makineyi ISO'dan açar. ISO yolunu kullanıcı vermeliyse ondan iste; "
+                     "ISO'yu indirmek gerekiyorsa kullanıcıyı Microsoft'un resmi indirme sayfasına yönlendir. "
+                     "Kurulum ekranı açılınca bilgisayar kontrolüyle (screenshot/click/type) adımları ilerletebilirsin."),
+     "input_schema": _obj({"action": {"type": "string", "enum": ["list", "start", "stop", "create"]},
+                           "name": {"type": "string", "description": "Makine adı ya da adının bir parçası, ör. kali / Windows 11"},
+                           "iso": {"type": "string", "description": "create için: Windows 11 .iso dosyasının tam yolu"},
+                           "ram_mb": {"type": "integer", "description": "create için RAM (MB), varsayılan 8192"},
+                           "disk_gb": {"type": "integer", "description": "create için disk (GB), varsayılan 80"},
+                           "cpu": {"type": "integer", "description": "create için çekirdek sayısı, varsayılan 4"}}, ["action"])},
+    {"name": "anonymous_mode",
+     "description": ("Tor anonim modu: JARVIS'in KENDİ web isteklerini (Gemini, arama, hava durumu) yerel Tor "
+                     "üzerinden geçirip çıkış IP'sini gizler. on: açar; off: kapatır; new_ip: yeni Tor devresi "
+                     "alıp çıkış IP'sini değiştirir; status: durumu ve mevcut çıkış IP'sini gösterir. "
+                     "Kullanıcı 'anonim ol / gizli kal / ip değiştir / yeni ip' derse bunu kullan. Yalnızca Kali/Linux."),
+     "input_schema": _obj({"action": {"type": "string", "enum": ["on", "off", "new_ip", "status"]}}, [])},
+    {"name": "remote_jarvis",
+     "description": ("Aynı ağdaki BAŞKA bir JARVIS makinesine (ör. Kali ya da Windows) doğal dilde komut gönderir "
+                     "ve yanıtını getirir. Kullanıcı 'Kali'de şunu yap', 'Windows'ta şunu aç', 'öbür bilgisayarda "
+                     "…' derse bunu kullan: target=hedef makine adı (ör. 'kali', 'windows'), command=o makineye "
+                     "iletilecek istek. target='list' ağdaki makineleri listeler. Windows'a özel işleri (Office, "
+                     "MSI ışık) Windows makinesine; Kali araç/tarama işlerini Kali makinesine ilet."),
+     "input_schema": _obj({"target": {"type": "string", "description": "Hedef makine adı ya da 'list'"},
+                           "command": {"type": "string", "description": "O makineye iletilecek doğal dil isteği"}}, ["target"])},
+    {"name": "mesh",
+     "description": ("Makineler arası bağlantıyı (Windows↔Kali) yönetir. setup: bir takım kodu üretip gösterir "
+                     "(kullanıcı bu kodu diğer makinenin config'ine yazar); status: mesh durumunu ve ağda bulunan "
+                     "makineleri gösterir. Kullanıcı 'mesh kur / makineleri bağla' derse setup kullan."),
+     "input_schema": _obj({"action": {"type": "string", "enum": ["setup", "status"]}}, [])},
     {"name": "meme_library",
      "description": "Meme video kütüphanesini yönetir. list: kütüphanedeki meme kesitlerini listeler; download: bir video URL'sinden (YouTube vb.) meme kesiti indirip kütüphaneye ekler (name ile adlandır). Memleri edit_video'da klip olarak (path ile) araya ekleyebilirsin.",
      "input_schema": _obj({"action": {"type": "string", "enum": ["list", "download"]},
@@ -552,8 +733,55 @@ APP_ALIASES = {
     "davinci": r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe",
     "davinci resolve": r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe",
     "resolve": r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe",
-    "masaüstü": str(Path.home() / "OneDrive" / "Masaüstü"),
+    "masaüstü": str(next((p for p in (Path.home() / "OneDrive" / "Masaüstü", Path.home() / "OneDrive" / "Desktop",
+                                     Path.home() / "Desktop") if p.exists()), Path.home() / "Desktop")),
 }
+
+# Linux'ta aynı isimlerin karşılığı: sırayla denenir, ilk kurulu olan açılır
+LINUX_APP_ALIASES = {
+    "chrome": ["google-chrome", "chromium", "chromium-browser"], "google chrome": ["google-chrome", "chromium"],
+    "edge": ["microsoft-edge"], "firefox": ["firefox-esr", "firefox"], "tarayıcı": ["x-www-browser", "firefox-esr"],
+    "not defteri": ["mousepad", "gedit", "gnome-text-editor", "kate", "xed"], "notepad": ["mousepad", "gedit", "kate"],
+    "hesap makinesi": ["galculator", "gnome-calculator", "kcalc", "qalculate-gtk"],
+    "calculator": ["galculator", "gnome-calculator", "kcalc"],
+    "dosya gezgini": ["thunar", "nautilus", "dolphin", "nemo", "pcmanfm"], "explorer": ["thunar", "nautilus", "dolphin"],
+    "görev yöneticisi": ["xfce4-taskmanager", "gnome-system-monitor", "ksysguard", "htop"],
+    "terminal": ["x-terminal-emulator", "qterminal", "xfce4-terminal", "gnome-terminal", "konsole"],
+    "cmd": ["x-terminal-emulator", "qterminal", "xfce4-terminal"],
+    "ayarlar": ["xfce4-settings-manager", "gnome-control-center", "systemsettings"],
+    "settings": ["xfce4-settings-manager", "gnome-control-center", "systemsettings"],
+    "paint": ["pinta", "kolourpaint", "gimp"], "word": ["libreoffice --writer"], "excel": ["libreoffice --calc"],
+    "powerpoint": ["libreoffice --impress"], "power point": ["libreoffice --impress"],
+    "spotify": ["spotify"], "discord": ["discord"], "steam": ["steam"], "vlc": ["vlc"],
+    "wireshark": ["wireshark"], "burp": ["burpsuite"], "burpsuite": ["burpsuite"],
+    "tor browser": ["torbrowser-launcher"], "tor tarayıcı": ["torbrowser-launcher"],
+    "torbrowser": ["torbrowser-launcher"],
+    "davinci": ["/opt/resolve/bin/resolve"], "davinci resolve": ["/opt/resolve/bin/resolve"],
+    "resolve": ["/opt/resolve/bin/resolve"],
+    "masaüstü": [str(Path.home() / "Desktop"), str(Path.home() / "Masaüstü")],
+}
+
+
+def open_linux_app(name):
+    """Linux'ta uygulama adını kurulu bir programa çevirip açar; bulamazsa FileNotFoundError."""
+    low = name.strip().lower()
+    for cand in LINUX_APP_ALIASES.get(low, []) + [low, name.strip()]:
+        parts = cand.split()
+        if Path(parts[0]).expanduser().exists() and len(parts) == 1:
+            open_target(parts[0])
+            return
+        exe = shutil.which(parts[0])
+        if exe:
+            subprocess.Popen([exe, *parts[1:]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return
+    web = {"whatsapp": "https://web.whatsapp.com/", "spotify": "https://open.spotify.com/",
+           "clipchamp": "https://app.clipchamp.com/", "youtube": "https://www.youtube.com/"}
+    if low in web:
+        webbrowser.open(web[low])
+        return
+    raise FileNotFoundError(name)
+
 
 VK = {"play_pause": 0xB3, "next": 0xB0, "previous": 0xB1, "stop": 0xB2,
       "volume_up": 0xAF, "volume_down": 0xAE, "mute": 0xAD}
@@ -568,7 +796,9 @@ THEMES = {  # arka plan, başlık, metin, vurgu
 
 
 def press_key(vk, times=1):
-    linux_keys = {0x08: "backspace", 0x09: "tab", 0x0D: "enter", 0x1B: "esc", 0x2E: "delete"}
+    linux_keys = {0x08: "backspace", 0x09: "tab", 0x0D: "enter", 0x1B: "esc", 0x2E: "delete",
+                  0xB3: "playpause", 0xB0: "nexttrack", 0xB1: "prevtrack", 0xB2: "stop",
+                  0xAF: "volumeup", 0xAE: "volumedown", 0xAD: "volumemute"}
     for _ in range(times):
         if os.name == "nt":
             ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
@@ -579,6 +809,51 @@ def press_key(vk, times=1):
             if not key:
                 raise OSError(f"Linux'ta desteklenmeyen Windows tuş kodu: {vk}")
             pyautogui.press(key)
+
+
+_beat_proc = None
+
+
+def play_beat(path, loop=True):
+    """Beat'i arka planda çalar (Windows: MCI, Linux: ffplay)."""
+    global _beat_proc
+    stop_beat()
+    if os.name == "nt":
+        winmm = ctypes.windll.winmm
+        winmm.mciSendStringW(f'open "{path}" type waveaudio alias beat', None, 0, None)
+        winmm.mciSendStringW("play beat" + (" repeat" if loop else ""), None, 0, None)
+        return
+    ffplay = shutil.which("ffplay")
+    if ffplay:
+        _beat_proc = subprocess.Popen([ffplay, "-nodisp", "-loglevel", "quiet", *(["-loop", "0"] if loop else ["-autoexit"]),
+                                       str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        open_target(path)
+
+
+def stop_beat():
+    global _beat_proc
+    if os.name == "nt":
+        ctypes.windll.winmm.mciSendStringW("close beat", None, 0, None)
+        return
+    if _beat_proc and _beat_proc.poll() is None:
+        _beat_proc.terminate()
+    _beat_proc = None
+
+
+def default_machine_name():
+    """Makineye kısa, okunur bir ad üretir: ör. 'kali', 'windows-DESKTOP'."""
+    import socket
+    host = socket.gethostname().split(".")[0][:20]
+    if os.name == "nt":
+        return f"windows-{host}"
+    try:
+        rel = platform.freedesktop_os_release().get("ID", "").lower() if hasattr(platform, "freedesktop_os_release") else ""
+    except OSError:
+        rel = ""
+    if "kali" in rel or "kali" in host.lower():
+        return "kali"
+    return f"linux-{host}"
 
 
 def normalize_phone(phone):
@@ -695,9 +970,22 @@ class Computer:
         return [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                              "data": base64.standard_b64encode(buf.getvalue()).decode()}}]
 
+    def _grab_full(self):
+        """Tam ekran görüntüsü. Linux'ta ImageGrab güvenilmez; pyautogui/scrot'a düşer."""
+        if os.name == "nt":
+            from PIL import ImageGrab
+            return ImageGrab.grab()
+        try:
+            from PIL import ImageGrab
+            img = ImageGrab.grab()
+            if img:
+                return img
+        except Exception:
+            pass
+        return self.pg.screenshot()  # scrot / gnome-screenshot kullanır
+
     def _shot(self, region=None):
-        from PIL import ImageGrab
-        img = ImageGrab.grab()
+        img = self._grab_full()
         if region:
             x0, y0 = self._pt(region[:2])
             x1, y1 = self._pt(region[2:])
@@ -895,6 +1183,31 @@ class PowerPoint:
         if action == "list":
             files = sorted(PRESENTATIONS_DIR.glob("*.pptx"), key=os.path.getmtime, reverse=True)[:10]
             return "\n".join(f.name for f in files) or "Henüz sunum yok."
+        if os.name != "nt":
+            # Linux'ta PowerPoint yok: LibreOffice Impress ile aç/başlat, slayt geçişini klavyeyle yap
+            if action in ("open", "start"):
+                if not file:
+                    return "Linux'ta dosya adı vermen gerekiyor."
+                soffice = shutil.which("libreoffice") or shutil.which("soffice")
+                p = str(self.resolve(file))
+                if soffice:
+                    subprocess.Popen([soffice, "--show" if action == "start" else "--impress", p],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                else:
+                    open_target(p)
+                return "Sunum açılıyor." if action == "open" else "Slayt gösterisi başlıyor."
+            import pyautogui
+            if action == "next":
+                pyautogui.press("right")
+            elif action == "previous":
+                pyautogui.press("left")
+            elif action == "goto":
+                pyautogui.write(str(int(slide)))
+                pyautogui.press("enter")
+            elif action == "end":
+                pyautogui.press("esc")
+                return "Gösteri bitti."
+            return "Tamam."
         app = self._app()
         if action == "open":
             app.Presentations.Open(str(self.resolve(file)))
@@ -943,6 +1256,13 @@ class Tools:
             return f"Hata: {type(e).__name__}: {e}", True
 
     def t_open_app(self, name):
+        if os.name != "nt":
+            try:
+                open_linux_app(name)
+            except OSError:
+                return f"'{name}' bu Linux sistemde kurulu değil ya da bulunamadı."
+            time.sleep(1.0)
+            return f"{name} açılıyor."
         target = APP_ALIASES.get(name.strip().lower(), name)
         try:
             open_target(target)
@@ -970,14 +1290,337 @@ class Tools:
             m = psutil.virtual_memory()
             parts.append(f"RAM: %{m.percent:.0f} dolu ({m.used / 2**30:.1f}/{m.total / 2**30:.1f} GB)")
         if kind in ("disk", "all"):
-            d = psutil.disk_usage("C:\\")
-            parts.append(f"C: diski: {d.free / 2**30:.0f} GB boş / {d.total / 2**30:.0f} GB")
+            if sys.platform == "win32":
+                roots = ["C:\\"]
+            else:
+                roots = sorted({p.mountpoint for p in psutil.disk_partitions(all=False)}) or ["/"]
+            seen = set()
+            for root in roots:
+                try:
+                    d = psutil.disk_usage(root)
+                except (OSError, PermissionError):
+                    continue
+                key = (d.total, d.used)
+                if key in seen:
+                    continue
+                seen.add(key)
+                parts.append(f"Disk {root}: {d.free / 2**30:.1f} GB boş / {d.total / 2**30:.1f} GB")
         return "\n".join(parts)
+
+    def t_kali_tool(self, action, package=None):
+        """Kali/Linux için salt okunur yerel tanılama; serbest komut çalıştırma sunmaz."""
+        if not sys.platform.startswith("linux"):
+            return "Bu araç Kali/Linux içindir; JARVIS şu anda Linux'ta çalışmıyor."
+        if action == "installed_tools":
+            cats = {
+                "Keşif / Tarama": ["nmap", "masscan", "rustscan", "netdiscover", "arp-scan",
+                                    "fping", "dnsrecon", "dnsenum", "fierce", "theharvester",
+                                    "amass", "subfinder", "whatweb", "wafw00f"],
+                "Web": ["nikto", "gobuster", "ffuf", "feroxbuster", "dirb", "wpscan",
+                        "sqlmap", "commix", "xsser", "burpsuite", "zaproxy"],
+                "Parola / Brute": ["hydra", "medusa", "john", "hashcat", "crackmapexec",
+                                   "netexec", "patator", "cewl", "crunch"],
+                "Exploit / Post": ["msfconsole", "searchsploit", "impacket-scripts",
+                                   "responder", "evil-winrm", "enum4linux", "smbclient",
+                                   "smbmap", "ldapsearch"],
+                "Kablosuz / Ağ": ["aircrack-ng", "reaver", "bettercap", "ettercap",
+                                  "tcpdump", "tshark", "wireshark", "hcxdumptool"],
+                "Diğer / Yardımcı": ["metagoofil", "exiftool", "binwalk", "steghide",
+                                     "hashid", "gpg", "proxychains4", "tor", "git", "python3"],
+            }
+            lines = ["Kurulu Kali araçları (PATH kontrolü):"]
+            for cat, names in cats.items():
+                items = [f"{n}{'' if shutil.which(n) else ' (yok)'}" for n in names]
+                lines.append(f"\n[{cat}]\n" + ", ".join(items))
+            lines.append("\nNot: '(yok)' olanları kali_tool(action='install', package=ad) ile "
+                         "kurabilirim; kullanım için kali_tool(action='tool_help', package=ad).")
+            return "\n".join(lines)
+        if action == "tool_help":
+            if not package or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}", package):
+                return "Geçerli bir araç adı ver."
+            exe = shutil.which(package)
+            if not exe:
+                return f"{package} kurulu değil. kali_tool(action='install', package='{package}') ile kurabilirim."
+            for flag in (["--help"], ["-h"], ["--version"]):
+                try:
+                    r = subprocess.run([exe, *flag], capture_output=True, text=True, timeout=15,
+                                       encoding="utf-8", errors="replace")
+                    out = (r.stdout or r.stderr).strip()
+                    if out:
+                        return f"{package} {flag[0]}:\n" + out[:5000]
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+            return f"{package} için yardım çıktısı alınamadı; man {package} deneyebilirsin."
+        if action == "install":
+            if not package or not re.fullmatch(r"[a-z0-9][a-z0-9.+-]{0,127}", package):
+                return "Geçerli bir APT paket adı ver (küçük harf)."
+            apt = shutil.which("apt-get") or shutil.which("apt")
+            if not apt:
+                return "apt bulunamadı; paket kurulamıyor."
+            if not self.app.ask_confirm("Kali paket kurulumu",
+                                        f"Şu Kali aracı/paketi kurulacak:\n\n{package}\n\n"
+                                        "(sudo apt install) Onaylıyor musun?"):
+                return "Paket kurulumu onaylanmadı."
+            self.q_status(f"{package} kuruluyor…")
+            sudo = ["sudo"] if os.geteuid() != 0 else []
+            r = subprocess.run(sudo + [apt, "install", "-y", "--", package],
+                               capture_output=True, text=True, timeout=600,
+                               encoding="utf-8", errors="replace",
+                               env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+            tail = (r.stdout + ("\n" + r.stderr if r.stderr.strip() else "")).strip()[-1500:]
+            if r.returncode == 0:
+                return f"{package} kuruldu (ya da zaten kuruluydu).\n{tail}"
+            return f"{package} kurulamadı (çıkış {r.returncode}):\n{tail}"
+        if action == "system_info":
+            uname = platform.uname()
+            vm = psutil.virtual_memory()
+            disks = psutil.disk_usage("/")
+            return (f"İşletim sistemi: {uname.system} {uname.release} ({uname.machine})\n"
+                    f"Bilgisayar: {uname.node}\nCPU: {psutil.cpu_count(logical=True)} mantıksal çekirdek, "
+                    f"kullanım %{psutil.cpu_percent(interval=0.3):.0f}\n"
+                    f"RAM: %{vm.percent:.0f} kullanılıyor ({vm.available / 2**30:.1f} GB boş)\n"
+                    f"/ diski: {disks.free / 2**30:.1f} GB boş / {disks.total / 2**30:.1f} GB")
+        if action == "network_info":
+            rows = []
+            for iface, addresses in psutil.net_if_addrs().items():
+                ips = [a.address for a in addresses if a.family in (2, 10)]
+                if ips:
+                    rows.append(f"{iface}: {', '.join(ips)}")
+            return "Yerel ağ arayüzleri:\n" + ("\n".join(rows) if rows else "IP adresi bulunamadı.")
+        if action == "updates":
+            apt = shutil.which("apt")
+            if not apt:
+                return "apt bulunamadı. Paket yöneticisi değişiklik yapılmadan kontrol edilemedi."
+            # Yalnızca yerel APT indeksini okur; güncelleme/kurulum yapmaz.
+            r = subprocess.run([apt, "list", "--upgradable"], capture_output=True, text=True,
+                               timeout=30, encoding="utf-8", errors="replace")
+            out = (r.stdout + ("\n" + r.stderr if r.stderr.strip() else "")).strip()
+            return (out or "Bekleyen güncelleme görünmüyor.")[:6000]
+        if action == "package_info":
+            if not package or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+:-]{0,127}", package):
+                return "Geçerli bir APT paket adı ver."
+            apt_cache = shutil.which("apt-cache")
+            if not apt_cache:
+                return "apt-cache bulunamadı."
+            r = subprocess.run([apt_cache, "show", "--", package], capture_output=True, text=True,
+                               timeout=20, encoding="utf-8", errors="replace")
+            out = (r.stdout or r.stderr).strip()
+            return (out or f"{package} paketi yerel APT indeksinde bulunamadı.")[:6000]
+        return "Desteklenmeyen Kali tanılama işlemi."
+
+    @staticmethod
+    def _lab_config():
+        return load_json(LAB_CONFIG_FILE, {})
+
+    @staticmethod
+    def _lab_target_is_allowed(target, configured):
+        target = (target or "").strip().rstrip(".")
+        if not target or len(target) > 253:
+            return False
+        try:
+            target_network = (ipaddress.ip_network(target, strict=False) if "/" in target
+                              else ipaddress.ip_network(target + ("/32" if "." in target else "/128")))
+        except ValueError:
+            target_network = None
+        if target_network:
+            for entry in configured:
+                try:
+                    scope = ipaddress.ip_network(str(entry), strict=False) if "/" in str(entry) else ipaddress.ip_network(
+                        str(entry) + ("/32" if "." in str(entry) else "/128"))
+                    if target_network.subnet_of(scope):
+                        return True
+                except ValueError:
+                    continue
+            return False
+        for entry in configured:
+            scope = str(entry).strip().rstrip(".")
+            if not scope or "REPLACE" in scope.upper():
+                continue
+            try:
+                if ipaddress.ip_address(target) in ipaddress.ip_network(scope, strict=False):
+                    return True
+            except ValueError:
+                if target.lower() == scope.lower() and re.fullmatch(
+                        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*", scope):
+                    return True
+        return False
+
+    def t_lab_session(self, action, target=None):
+        if not sys.platform.startswith("linux"):
+            return "Laboratuvar modu yalnızca Kali/Linux'ta kullanılabilir."
+        state = load_json(LAB_SESSION_FILE, {})
+        if action == "status":
+            return (f"Aktif laboratuvar hedefi: {state.get('target')}\nRapor: {state.get('report')}"
+                    if state.get("active") else "Aktif laboratuvar oturumu yok.")
+        if action == "stop":
+            if not state.get("active"):
+                return "Aktif laboratuvar oturumu yok."
+            state["active"] = False
+            state["ended_at"] = datetime.now().isoformat(timespec="seconds")
+            save_json(LAB_SESSION_FILE, state)
+            return f"Laboratuvar oturumu kapatıldı. Rapor: {state.get('report')}"
+        if action != "start":
+            return "Desteklenmeyen oturum işlemi."
+        if state.get("active"):
+            return f"Önce açık oturumu kapat: hedef {state.get('target')} (lab_session stop)."
+        if not target:
+            return "Başlatmak için izinli hedefi açıkça belirt."
+        config = self._lab_config()
+        allowed = config.get("allowed_targets", [])
+        if not isinstance(allowed, list):
+            allowed = []
+        if not self._lab_target_is_allowed(target, allowed):
+            if not self._lab_target_is_allowed(target, [target]):
+                return "Geçerli bir IPv4/CIDR hedefi veya alan adı ver."
+            allowed.append(target.strip().rstrip("."))
+            config["allowed_targets"] = allowed
+            save_json(LAB_CONFIG_FILE, config)
+        report_dir = Path.home() / "JARVIS-Lab-Reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        report = report_dir / f"lab-{stamp}.md"
+        report.write_text(
+            f"# JARVIS Laboratuvar Raporu\n\n- Hedef: `{target.strip()}`\n"
+            f"- Başlangıç: {datetime.now().isoformat(timespec='seconds')}\n\n## Komutlar ve çıktılar\n",
+            encoding="utf-8")
+        state = {"active": True, "target": target.strip(), "started_at": datetime.now().isoformat(timespec="seconds"),
+                 "report": str(report)}
+        save_json(LAB_SESSION_FILE, state)
+        return f"Laboratuvar oturumu başladı. Hedef: {target}. Rapor: {report}"
+
+    @staticmethod
+    def _lab_redact(text):
+        patterns = [
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+            r"(?i)(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{30,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{24,})",
+            r"(?i)(?:api[_-]?key|access[_-]?token|password|passwd|client[_-]?secret)\s*[:=]\s*[^\s,;]+",
+        ]
+        redacted = text
+        found = False
+        for pattern in patterns:
+            redacted, n = re.subn(pattern, "[REDACTED]", redacted)
+            found = found or n > 0
+        return redacted, found
+
+    def _lab_publish(self, report_path):
+        config = self._lab_config()
+        repo = str(config.get("github_repo", "")).strip()
+        if not config.get("auto_publish", True) or not repo:
+            return "GitHub aktarımı yapılandırılmamış; rapor yerelde kaydedildi."
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            return "GitHub aktarımı atlandı: github_repo 'sahip/depo' biçiminde olmalı."
+        gh, git = shutil.which("gh"), shutil.which("git")
+        if not gh or not git:
+            return "GitHub aktarımı atlandı: gh ve git kurulu olmalı. Rapor yerelde kaydedildi."
+        report_dir = Path.home() / "JARVIS-Lab-Reports"
+        repo_dir = report_dir / ".github_repo"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+
+        def run(args):
+            return subprocess.run(args, cwd=str(repo_dir), capture_output=True, text=True,
+                                  timeout=90, encoding="utf-8", errors="replace")
+
+        auth = run([gh, "auth", "status"])
+        if auth.returncode:
+            return "GitHub aktarımı atlandı: gh auth login ile oturum aç. Rapor yerelde kaydedildi."
+        remote = run([gh, "repo", "view", repo, "--json", "isPrivate", "--jq", ".isPrivate"])
+        if remote.returncode == 0 and remote.stdout.strip().lower() != "true":
+            return "GitHub aktarımı engellendi: depo özel değil. Rapor yerelde kaydedildi."
+        if not (repo_dir / ".git").exists() and remote.returncode == 0:
+            clone = subprocess.run([gh, "repo", "clone", repo, str(repo_dir)], cwd=str(report_dir),
+                                   capture_output=True, text=True, timeout=180,
+                                   encoding="utf-8", errors="replace")
+            if clone.returncode:
+                return f"Özel depo klonlanamadı: {(clone.stderr or clone.stdout)[:300]}"
+        elif not (repo_dir / ".git").exists():
+            init = run([git, "init", "-b", "main"])
+            if init.returncode:
+                init = run([git, "init"])
+            if init.returncode:
+                return f"GitHub aktarımı başarısız: {init.stderr[:300]}"
+        shutil.copy2(report_path, repo_dir / report_path.name)
+        add = run([git, "add", "--", report_path.name])
+        if add.returncode:
+            return f"GitHub aktarımı başarısız: {add.stderr[:300]}"
+        commit = run([git, "-c", "user.name=JARVIS", "-c", "user.email=jarvis@localhost",
+                      "commit", "-m", f"Lab report {report_path.stem}"])
+        if commit.returncode and "nothing to commit" not in (commit.stdout + commit.stderr).lower():
+            return f"GitHub aktarımı başarısız: {commit.stderr[:300]}"
+        if remote.returncode != 0:
+            create = run([gh, "repo", "create", repo, "--private", "--source=.", "--remote=origin", "--push"])
+            if create.returncode:
+                return f"Özel GitHub deposu oluşturulamadı: {(create.stderr or create.stdout)[:300]}"
+            return f"Rapor özel GitHub deposuna aktarıldı: {repo}"
+        remote_url = run([git, "remote", "get-url", "origin"])
+        if remote_url.returncode:
+            set_remote = run([git, "remote", "add", "origin", f"https://github.com/{repo}.git"])
+            if set_remote.returncode:
+                return f"GitHub remote ayarlanamadı: {set_remote.stderr[:300]}"
+        else:
+            actual = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", remote_url.stdout.strip(), re.I)
+            if not actual or f"{actual.group(1)}/{actual.group(2)}".lower() != repo.lower():
+                return "GitHub aktarımı engellendi: origin adresi yapılandırılan depo ile eşleşmiyor."
+        push = run([git, "push", "-u", "origin", "HEAD"])
+        if push.returncode:
+            return f"GitHub aktarımı başarısız: {(push.stderr or push.stdout)[:300]}"
+        return f"Rapor özel GitHub deposuna aktarıldı: {repo}"
+
+    def t_lab_test(self, command):
+        if not sys.platform.startswith("linux"):
+            return "Laboratuvar komutları yalnızca Kali/Linux'ta çalıştırılır."
+        state = load_json(LAB_SESSION_FILE, {})
+        target = str(state.get("target", "")).strip()
+        report = Path(state.get("report", ""))
+        if not state.get("active") or not target or not report.is_file():
+            return "Önce izinli bir hedefle lab_session(action='start') başlat."
+        if not command or len(command) > 2000:
+            return "Komut boş olamaz ve 2000 karakteri aşamaz."
+        if not re.search(r"(?<![A-Za-z0-9_.:-])" + re.escape(target) + r"(?![A-Za-z0-9_.:-])", command, re.I):
+            return f"Komut aktif hedefi ({target}) açıkça içermiyor; çalıştırılmadı."
+        configured = self._lab_config().get("allowed_targets", [])
+        for literal in re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])", command):
+            try:
+                requested = (ipaddress.ip_network(literal, strict=False) if "/" in literal
+                             else ipaddress.ip_network(literal + "/32", strict=False))
+                scopes = [ipaddress.ip_network(str(scope), strict=False) if "/" in str(scope)
+                          else ipaddress.ip_network(str(scope) + "/32", strict=False)
+                          for scope in configured]
+                in_scope = any(requested.subnet_of(scope) for scope in scopes)
+            except ValueError:
+                in_scope = False
+            if not in_scope:
+                return f"Komuttaki hedef {literal} izin verilen kapsamda değil; çalıştırılmadı."
+        non_host_suffixes = {"txt", "xml", "json", "html", "htm", "csv", "log", "md", "pdf",
+                             "py", "sh", "conf", "yaml", "yml", "ini", "js", "css", "png",
+                             "jpg", "jpeg", "pem", "key", "crt", "nmap", "gnmap"}
+        domains = [d for d in re.findall(
+            r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?![A-Za-z0-9_-])", command)
+                   if d.rsplit(".", 1)[-1].lower() not in non_host_suffixes]
+        permitted_domains = {str(scope).strip().lower().rstrip(".") for scope in configured
+                             if not re.fullmatch(r"[0-9./]+", str(scope).strip())}
+        permitted_domains.add(target.lower().rstrip("."))
+        if any(domain.lower().rstrip(".") not in permitted_domains for domain in domains):
+            return "Komutta aktif hedef dışı bir alan adı var; izinli kapsam dışı komut çalıştırılmadı."
+        if not self.app.ask_confirm("Laboratuvar komutu", f"Hedef: {target}\n\nKomut:\n{command}\n\nÇalıştırılsın mı?"):
+            return "Kullanıcı komutu onaylamadı."
+        result = subprocess.run(["bash", "-lc", command], capture_output=True, text=True, timeout=300,
+                                encoding="utf-8", errors="replace")
+        raw = (result.stdout + ("\n[stderr]\n" + result.stderr if result.stderr.strip() else "")).strip()
+        safe_command, command_secret = self._lab_redact(command)
+        safe_output, output_secret = self._lab_redact(raw[:12000])
+        report.parent.mkdir(parents=True, exist_ok=True)
+        with report.open("a", encoding="utf-8") as f:
+            f.write(f"\n### {datetime.now().isoformat(timespec='seconds')}\n\n"
+                    f"- Hedef: `{target}`\n- Komut: `{safe_command}`\n- Çıkış kodu: {result.returncode}\n\n"
+                    f"```text\n{safe_output or '(çıktı yok)'}\n```\n")
+        publish = ("Rapor özel depoya otomatik aktarılmadı: olası gizli bilgi bulundu."
+                   if command_secret or output_secret else self._lab_publish(report))
+        return f"Komut tamamlandı (çıkış kodu {result.returncode}).\n{safe_output[:4000]}\n\nRapor: {report}\n{publish}"
 
     def t_get_weather(self, location):
         url = f"https://wttr.in/{urllib.parse.quote(location)}?format=j1&lang=tr"
         req = urllib.request.Request(url, headers={"User-Agent": "curl"})
-        data = json.loads(urllib.request.urlopen(req, timeout=15).read())
+        data = json.loads(net_urlopen(req, timeout=15).read())
         cur = data["current_condition"][0]
         desc = (cur.get("lang_tr") or cur["weatherDesc"])[0]["value"]
         out = [f"{location}: {desc}, {cur['temp_C']}°C (hissedilen {cur['FeelsLikeC']}°C), "
@@ -995,6 +1638,11 @@ class Tools:
         return f"Açıldı: {value}"
 
     def t_play_media(self, query, provider):
+        if provider == "spotify" and os.name != "nt":
+            # Linux'ta Spotify penceresini otomatik yönetemiyoruz: web arama sayfasını aç
+            url = "https://open.spotify.com/search/" + urllib.parse.quote(query)
+            webbrowser.open(url)
+            return f"Spotify'da arama açıldı: {url}"
         if provider == "spotify":
             try:
                 return self._spotify_play(query)
@@ -1082,7 +1730,7 @@ class Tools:
         search = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
         try:
             req = urllib.request.Request(search, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "tr"})
-            html = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "ignore")
+            html = net_urlopen(req, timeout=10).read().decode("utf-8", "ignore")
             i = html.find('"videoId":"')
             if i != -1:
                 return "https://www.youtube.com/watch?v=" + html[i + 11:i + 22]
@@ -1091,6 +1739,8 @@ class Tools:
         return search
 
     def t_keyboard_light(self, action, color=None):
+        if os.name != "nt":
+            return "Klavye ışığı kontrolü MSI Center'a bağlı ve yalnızca Windows'ta çalışır."
         appid = r"shell:AppsFolder\9426MICRO-STARINTERNATION.MSICenter_kzh8wxbdkxb8p!App"
         self.app.hide_for_control()
         try:
@@ -1113,17 +1763,25 @@ class Tools:
         self.last_beat = str(path)
         # sürekli tekrar için MCI ile aç ve çal
         self.app.voice.stop()
-        winmm = ctypes.windll.winmm
-        winmm.mciSendStringW("close beat", None, 0, None)
-        winmm.mciSendStringW(f'open "{path}" type waveaudio alias beat', None, 0, None)
-        winmm.mciSendStringW("play beat" + (" repeat" if loop else ""), None, 0, None)
+        play_beat(path, loop)
         return (f"{name} beat hazır ({real_bpm} bpm){' (döngüde)' if loop else ''} ve çalıyor. "
                 "Üstüne söyleyebilirsin. Durdurmak için 'beati durdur', değiştirmek için yeni tür söyle. "
                 f"Kayıt: {path}")
 
     def t_control_media(self, action):
         if action in ("play_pause", "stop"):
-            ctypes.windll.winmm.mciSendStringW("stop beat", None, 0, None)  # çalan beat varsa durdur
+            stop_beat()  # çalan beat varsa durdur
+        if os.name != "nt" and action.startswith("volume"):
+            # Linux'ta medya tuşları her masaüstünde çalışmaz; önce ses sunucusunu doğrudan ayarla
+            cmd = {"volume_up": ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
+                   "volume_down": ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
+                   "mute": ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"]}.get(action)
+            if cmd and shutil.which("pactl") and subprocess.run(cmd, capture_output=True).returncode == 0:
+                return f"{action} yapıldı."
+        if os.name != "nt" and action in ("play_pause", "next", "previous", "stop") and shutil.which("playerctl"):
+            verb = {"play_pause": "play-pause", "next": "next", "previous": "previous", "stop": "stop"}[action]
+            if subprocess.run(["playerctl", verb], capture_output=True).returncode == 0:
+                return f"{action} yapıldı."
         press_key(VK[action], 5 if action.startswith("volume") else 1)
         return f"{action} yapıldı."
 
@@ -1316,13 +1974,13 @@ class Tools:
     def q_status(self, msg):
         self.app.q.put(("status", msg))
 
-    def t_vmware_control(self, action, name=None):
+    def t_vmware_control(self, action, name=None, iso=None, ram_mb=8192, disk_gb=80, cpu=4):
         import glob
         vmrun = next((p for p in [r"C:\Program Files\VMware\VMware Workstation\vmrun.exe",
-                                  r"C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe"] if os.path.exists(p)), None)
+                                  r"C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe"] if os.path.exists(p)),
+                     None) or shutil.which("vmrun")
         if not vmrun:
             return "VMware Workstation bulunamadı."
-        vmware = os.path.join(os.path.dirname(vmrun), "vmware.exe")
 
         def run(args):
             return subprocess.run([vmrun, "-T", "ws"] + args, capture_output=True, text=True,
@@ -1330,12 +1988,16 @@ class Tools:
 
         # Bilinen konumlardaki tüm .vmx dosyalarını bul
         roots = [Path.home() / "OneDrive" / "Belgeler" / "Virtual Machines",
-                 Path.home() / "Documents" / "Virtual Machines", Path.home() / "Virtual Machines"]
+                 Path.home() / "Documents" / "Virtual Machines", Path.home() / "Virtual Machines",
+                 Path.home() / "vmware"]
         vmx = []
         for r in roots:
             if r.exists():
                 vmx += glob.glob(str(r / "**" / "*.vmx"), recursive=True)
         running = [l.strip() for l in run(["list"]).stdout.splitlines() if l.strip().lower().endswith(".vmx")]
+
+        if action == "create":
+            return self._vmware_create(vmrun, run, name, iso, ram_mb, disk_gb, cpu)
 
         if action == "list":
             lines = ["Sanal makineler:"]
@@ -1369,6 +2031,193 @@ class Tools:
         return (f"{Path(target).stem} açıldı ve masaüstünde görünüyor. Sistemin açılmasını (giriş ekranı) bekle, "
                 "sonra ekran görüntüsü alıp gireceğin komutları terminale yaz. Not: yalnızca kullanıcının "
                 "söylediği, kendi lab ortamındaki hedeflere yönelik komutları çalıştır.")
+
+    def _vmware_create(self, vmrun, run, name, iso, ram_mb, disk_gb, cpu):
+        """Windows 11 kurabilen yeni bir VMware makinesi oluşturur (UEFI + sanal TPM 2.0 + Secure Boot)."""
+        if os.name != "nt":
+            return "VMware makine oluşturma şu an yalnızca Windows'ta destekleniyor."
+        name = (name or "Windows 11").strip()
+        safe = "".join(c for c in name if c not in '<>:"/\\|?*').strip() or "Windows 11"
+        if not iso:
+            return ("Windows 11 kurmak için ISO dosyasının tam yolunu ver (iso=...). "
+                    "ISO'n yoksa Microsoft'un resmi sayfasından indir: "
+                    "https://www.microsoft.com/software-download/windows11  "
+                    "İndirince dosya yolunu söyle, gerisini ben hallederim.")
+        iso_p = Path(iso).expanduser()
+        if not iso_p.exists():
+            return f"ISO bulunamadı: {iso_p}. Dosya yolunu kontrol et."
+
+        base = Path.home() / "Documents" / "Virtual Machines" / safe
+        if base.exists() and any(base.glob("*.vmx")):
+            return f"'{safe}' zaten var: {base}. Açmak için start, silmek istersen klasörü elle sil."
+        base.mkdir(parents=True, exist_ok=True)
+        vmx_path = base / f"{safe}.vmx"
+        disk_path = base / f"{safe}.vmdk"
+
+        # Sanal disk oluştur
+        vdisk = Path(vmrun).with_name("vmware-vdiskmanager.exe")
+        if vdisk.exists():
+            r = subprocess.run([str(vdisk), "-c", "-s", f"{int(disk_gb)}GB", "-a", "nvme", "-t", "0", str(disk_path)],
+                               capture_output=True, text=True, creationflags=NO_WINDOW, timeout=120)
+            if r.returncode != 0:
+                return f"Disk oluşturulamadı: {r.stderr.strip() or r.stdout.strip()}"
+
+        ram_mb = max(4096, int(ram_mb))     # Win11 min 4 GB
+        cpu = max(2, int(cpu))
+        # Windows 11 için gerekli: firmware=efi, secureboot, vTPM (şifreleme gerektirir)
+        vmx = f'''.encoding = "windows-1252"
+config.version = "8"
+virtualHW.version = "19"
+displayName = "{safe}"
+guestOS = "windows11-64"
+firmware = "efi"
+uefi.secureBoot.enabled = "TRUE"
+memsize = "{ram_mb}"
+numvcpus = "{cpu}"
+cpuid.coresPerSocket = "{cpu}"
+nvme0.present = "TRUE"
+nvme0:0.present = "TRUE"
+nvme0:0.fileName = "{disk_path.name}"
+sata0.present = "TRUE"
+sata0:1.present = "TRUE"
+sata0:1.deviceType = "cdrom-image"
+sata0:1.fileName = "{iso_p}"
+sata0:1.startConnected = "TRUE"
+ethernet0.present = "TRUE"
+ethernet0.connectionType = "nat"
+ethernet0.virtualDev = "e1000e"
+usb.present = "TRUE"
+ehci.present = "TRUE"
+svga.present = "TRUE"
+sound.present = "TRUE"
+sound.autoDetect = "TRUE"
+managedvm.autoAddVTPM = "software"
+vtpm.present = "TRUE"
+tools.syncTime = "TRUE"
+'''
+        vmx_path.write_text(vmx, encoding="utf-8")
+
+        self.app.hide_for_control()
+        r = run(["start", str(vmx_path), "gui"])
+        if r.returncode != 0 and "already" not in (r.stderr + r.stdout).lower():
+            try:
+                open_target(str(vmx_path))
+            except OSError:
+                return (f"Makine oluşturuldu ({vmx_path}) ama açılamadı: "
+                        f"{r.stderr.strip() or r.stdout.strip()}. VMware'de elle açıp ISO'dan başlat.")
+        time.sleep(6)
+        return (f"'{safe}' sanal makinesi oluşturuldu ve Windows 11 ISO'sundan açılıyor "
+                f"({ram_mb//1024} GB RAM, {cpu} çekirdek, {disk_gb} GB disk, UEFI + TPM 2.0 hazır).\n"
+                "Kurulum ekranı gelince ekran görüntüsü alıp adımları ilerletebilirim: "
+                "'Şimdi yükle' → sürüm seç → 'Özel kurulum' → diski seç. "
+                "İstersen kurulumu benim tıklayarak yapmamı söyle, ekranı yönetirim.")
+
+    def t_anonymous_mode(self, action="status"):
+        """Tor anonim modu: JARVIS'in kendi web isteklerini Tor üzerinden geçirir; yeni IP alır."""
+        if action in ("on", "start", "enable"):
+            if os.name == "nt":
+                return ("Tor anonim modu Kali/Linux içindir. Windows'ta Tor SOCKS proxy'si (127.0.0.1:9050) "
+                        "çalışıyorsa yine de açabilirim ama önerilen kullanım Kali'de.") if not tor_socks_ready() else self._anon_enable()
+            if not tor_socks_ready():
+                # Kali'de tor servisini başlatmayı dene
+                for cmd in (["service", "tor", "start"], ["systemctl", "start", "tor"]):
+                    if shutil.which(cmd[0]):
+                        subprocess.run(cmd, capture_output=True)
+                        break
+                for _ in range(10):
+                    if tor_socks_ready():
+                        break
+                    time.sleep(1)
+            if not tor_socks_ready():
+                return ("Tor çalışmıyor. Kur ve başlat: install_kali.sh'i yeniden çalıştır ya da "
+                        "'sudo apt install -y tor && sudo service tor start'.")
+            return self._anon_enable()
+        if action in ("off", "stop", "disable"):
+            ANON["on"] = False
+            cfg = load_json(CONFIG_FILE, {})
+            cfg["anonymous_mode"] = False
+            save_json(CONFIG_FILE, cfg)
+            return "Anonim mod kapandı. Web isteklerim artık normal bağlantıdan gidiyor."
+        if action in ("new_ip", "new", "rotate", "renew"):
+            if not ANON["on"]:
+                return "Önce anonim modu aç ('anonim mod aç'), sonra yeni IP isteyebilirim."
+            ok, msg = tor_new_identity()
+            if ok:
+                time.sleep(2)
+                ip, is_tor = tor_exit_ip()
+                return f"{msg} Yeni çıkış IP: {ip}" + ("" if is_tor else " (Tor doğrulanamadı)")
+            return msg
+        # status
+        if not ANON["on"]:
+            return "Anonim mod: KAPALI. 'anonim mod aç' dersem web isteklerimi Tor'dan geçiririm."
+        ip, is_tor = tor_exit_ip()
+        return f"Anonim mod: AÇIK. Çıkış IP: {ip}" + (" (Tor doğrulandı)" if is_tor else " (Tor doğrulanamadı)")
+
+    def _anon_enable(self):
+        ANON["on"] = True
+        cfg = load_json(CONFIG_FILE, {})
+        cfg["anonymous_mode"] = True
+        save_json(CONFIG_FILE, cfg)
+        ip, is_tor = tor_exit_ip()
+        return (f"Anonim mod açıldı — web isteklerim artık Tor üzerinden gidiyor. Çıkış IP: {ip}"
+                + (" (Tor doğrulandı)." if is_tor else " (Tor doğrulanamadı; yine de deniyorum).")
+                + " 'yeni ip' dersem devreyi değiştirip IP'yi yenilerim. Not: dışarıdaki tarayıcı "
+                  "bundan etkilenmez; tam gizlilik için tarayıcı tarafında Tor Browser kullan.")
+
+    def t_remote_jarvis(self, target, command=None):
+        """Ağdaki başka bir JARVIS makinesine (ör. kali/windows) komut gönderir, yanıtı getirir."""
+        peers = getattr(self.app, "peers", {})
+        if target == "list" or not command:
+            if not peers:
+                return ("Ağda başka JARVIS makinesi görünmüyor. İki makinede de aynı team_token ayarlı ve "
+                        "ikisi de açık mı? ('mesh kur' ile kod alıp diğerine yazabilirsin.)")
+            rows = [f"- {n}: {d['host']}:{d['port']}" for n, d in peers.items()]
+            return f"Bu makine: {self.app.machine_name}\nAğdaki JARVIS makineleri:\n" + "\n".join(rows)
+        if getattr(self.app, "_no_relay", False):
+            return "Bu istek zaten başka bir makineden geldi; döngü olmasın diye tekrar iletmiyorum."
+        if not getattr(self.app, "team_token", ""):
+            return "Mesh kurulu değil. Önce 'mesh kur' de ve kodu diğer makineye yaz."
+        # Hedef eşi bul (tam ad ya da içeren)
+        match = None
+        for n, d in peers.items():
+            if target.lower() == n.lower() or target.lower() in n.lower():
+                match = (n, d); break
+        if not match:
+            names = ", ".join(peers) or "yok"
+            return f"'{target}' adlı makine ağda bulunamadı. Görünenler: {names}"
+        n, d = match
+        self.q_status(f"{n} makinesine iletiliyor…")
+        payload = json.dumps({"token": self.app.team_token, "text": command, "relay": True}).encode("utf-8")
+        req = urllib.request.Request(f"http://{d['host']}:{d['port']}/ask", data=payload,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                out = json.loads(r.read())
+            return f"[{n}] {out.get('reply', '(boş yanıt)')}"
+        except urllib.error.URLError as e:
+            return f"{n} makinesine ulaşılamadı: {e}"
+
+    def t_mesh(self, action="status"):
+        """Mesh (makineler arası bağlantı) kurulumu: setup kod üretir, status durumu gösterir."""
+        cfg = load_json(CONFIG_FILE, {})
+        if action in ("setup", "kur", "new"):
+            import secrets
+            tok = str(cfg.get("team_token", "")).strip()
+            if not tok:
+                tok = secrets.token_urlsafe(24)
+                cfg["team_token"] = tok
+                save_json(CONFIG_FILE, cfg)
+                self.app.team_token = tok
+            return (f"Mesh takım kodu:\n\n{tok}\n\nBu kodu DİĞER makinenin (ör. Kali) "
+                    "config/api_keys.json dosyasına şu satırla ekle:\n"
+                    f'  "team_token": "{tok}"\n'
+                    "Sonra o makinede JARVIS'i yeniden başlat. İkisi de aynı Wi-Fi'daysa birbirini "
+                    "otomatik bulur. Bu makinede de mesh'i başlatmak için JARVIS'i bir kez yeniden başlat.")
+        # status
+        peers = getattr(self.app, "peers", {})
+        on = "AÇIK" if getattr(self.app, "team_token", "") else "KAPALI"
+        rows = "\n".join(f"- {n}: {d['host']}:{d['port']}" for n, d in peers.items()) or "(henüz kimse yok)"
+        return f"Mesh: {on}. Bu makine: {getattr(self.app, 'machine_name', '?')}\nAğdaki makineler:\n{rows}"
 
     def t_meme_library(self, action, url=None, name=None):
         import jarvis_video as jv
@@ -1407,12 +2256,16 @@ class Tools:
                 "Dosya seçme penceresi çıkınca yol kutusuna tam dosya yolunu yazıp Enter'a bas.")
 
     def t_shell_run(self, command):
-        # Sistem komutu çalıştırma tek onay gerektirir (güvenlik ağı; kaldırılmaz)
+        if sys.platform.startswith("linux"):
+            return "Kali komutları lab_session ile izinli oturum açıldıktan sonra lab_test üzerinden çalıştır."
+        # Sistem komutu çalıştırma her zaman kullanıcı onayı gerektirir.
         if not self.app.ask_confirm(
                 "Komut onayı", f"JARVIS şu komutu çalıştırmak istiyor:\n\n{command}\n\nİzin veriyor musun?"):
             return "Kullanıcı bu komutun çalıştırılmasına izin vermedi."
         log(f"shell_run: {command[:200]}")
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", command],
+        args = (["powershell", "-NoProfile", "-Command", command]
+                if sys.platform == "win32" else ["bash", "-lc", command])
+        r = subprocess.run(args,
                            capture_output=True, text=True, timeout=120,
                            encoding="utf-8", errors="replace",
                            creationflags=NO_WINDOW)
@@ -1794,7 +2647,13 @@ class Voice:
         threading.Thread(target=self._say, args=(text,), daemon=True).start()
 
     def _say_offline(self, text):
-        """İnternetsizken Windows'un kendi sesiyle okur (edge-tts internet ister)."""
+        """İnternetsizken Windows'un kendi sesiyle (Linux'ta espeak-ng ile) okur (edge-tts internet ister)."""
+        if os.name != "nt":
+            espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+            if espeak:
+                subprocess.run([espeak, "-v", "tr", SV_TAG.sub(r"\1", text)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
         try:
             import pythoncom
             import win32com.client
@@ -1820,11 +2679,18 @@ class Voice:
                     self.stop()
                     my = self._alias
                     files = []
-                    for i, (voice, chunk) in enumerate(parts):
-                        path = Path(tempfile.gettempdir()) / f"jarvis_tts_{my}_{i}.mp3"
-                        rate = "-20%" if voice == TTS_VOICE_SV else "+0%"
-                        asyncio.run(edge_tts.Communicate(chunk, voice, rate=rate).save(str(path)))
-                        files.append(path)
+                    try:
+                        for i, (voice, chunk) in enumerate(parts):
+                            path = Path(tempfile.gettempdir()) / f"jarvis_tts_{my}_{i}.mp3"
+                            rate = "-20%" if voice == TTS_VOICE_SV else "+0%"
+                            asyncio.run(edge_tts.Communicate(chunk, voice, rate=rate).save(str(path)))
+                            files.append(path)
+                    except Exception as e:  # internet yok -> espeak-ng
+                        log(f"edge-tts başarısız ({e}); çevrimdışı sese geçiliyor")
+                        self._preparing -= 1
+                        counted = True
+                        self._say_offline(text)
+                        return
                     self._preparing -= 1
                     counted = True
                     for path in files:
@@ -2108,7 +2974,7 @@ def _post_json(url, headers, payload, timeout=90):
     for attempt in range(tries):
         req = urllib.request.Request(url, data=data, headers={**headers, "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with net_urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             last = e
@@ -2190,9 +3056,13 @@ class App:
         self.stop_event = threading.Event()
         self.overlay = None
         self.hidden = False
+        self.peers = {}          # mesh: {ad: {"host","port","last"}} — ağdaki diğer JARVIS'ler
+        self._no_relay = False   # eşten gelen isteğin sonsuz döngüye girmesini önler
 
         cfg = load_json(CONFIG_FILE, {})
         self.computer_allowed = not cfg.get("computer_confirm", True)  # fare/klavye sormadan
+        if cfg.get("anonymous_mode") and os.name != "nt":
+            ANON["on"] = tor_socks_ready()  # kayıtlı anonim mod: Tor hazırsa aç
         self.mic_muted = False
         self.listen_lang = "tr-TR"
 
@@ -2248,23 +3118,21 @@ class App:
         self._cfg = cfg
 
         key = cfg.get("anthropic_api_key", "").strip()
-        self.free_mode = cfg.get("free_version", False) or (not key and bool(cfg.get("gemini_api_key", "").strip()))
+        # Hiç anahtar yoksa (ör. config dosyası bu makineye kopyalanmamışsa) hata vermek yerine
+        # ücretsiz Gemini moduna geç ve anahtarı pencereden iste.
+        self.free_mode = cfg.get("free_version", False) or not key
         if self.free_mode:
             # Ücretsiz sürüm: sadece Gemini. Anahtar yoksa iste.
             gkey = cfg.get("gemini_api_key", "").strip()
-            if not gkey:
+            if not gkey or gkey.startswith("BURAYA_"):   # boş ya da örnek dosyadaki yer tutucu
                 gkey = self._ask_gemini_key()
                 if not gkey:
                     root.destroy(); return
             self.brain = None
             self.provider = "gemini"
-        elif key:
+        else:
             self.brain = Brain(key, self.tools, self)
             self.provider = "claude"
-        else:
-            messagebox.showerror("JARVIS", "config\\api_keys.json içine \"anthropic_api_key\" ya da "
-                                           "\"gemini_api_key\" ekle.")
-            root.destroy(); return
 
         _beyin = "Gemini (ücretsiz)" if self.free_mode else "Claude"
         self._write("info", f"{_beyin} beyne bağlı. Mikrofon sürekli açık — konuşman yeterli. Ya da yazıp Enter'a bas.\n"
@@ -2426,6 +3294,31 @@ class App:
             msg = f"Zaten {target} ile konuşuyorsun." if target == self.provider else self.set_provider(target)
             self.on_ui(self._restore); self.q.put(("reply", msg)); self.q.put(("status", "Hazır")); self.busy = False; return
 
+        # Anonim mod / yeni IP sözlü kısayolları (araç çağrısına gerek kalmadan)
+        anon_act = None
+        if re.search(r"\byeni ip\b|ip('?y[ıi])? de[ğg]i[şs]tir|ip yenile|devre de[ğg]i[şs]tir", low):
+            anon_act = "new_ip"
+        elif (("anonim" in low or "gizli" in low or "tor" in low) and
+              any(w in low for w in ("aç", "başlat", "ol", "geç", "aktif"))):
+            anon_act = "on"
+        elif (("anonim" in low or "gizli" in low or "tor" in low) and
+              any(w in low for w in ("kapat", "kapan", "durdur", "iptal"))):
+            anon_act = "off"
+        if anon_act:
+            msg, _ = self.tools.run("anonymous_mode", {"action": anon_act})
+            self.on_ui(self._restore); self.q.put(("reply", msg)); self.q.put(("status", "Hazır")); self.busy = False
+            return
+
+        # Mesh sözlü kısayolları
+        if re.search(r"mesh kur|makineleri ba[ğg]la|takım kodu|takim kodu|e[şs]le[şs]tirme kodu", low):
+            msg, _ = self.tools.run("mesh", {"action": "setup"})
+            self.on_ui(self._restore); self.q.put(("reply", msg)); self.q.put(("status", "Hazır")); self.busy = False
+            return
+        if re.search(r"mesh durum|ba[ğg]l[ıi] makineler|a[ğg]daki makineler", low):
+            msg, _ = self.tools.run("mesh", {"action": "status"})
+            self.on_ui(self._restore); self.q.put(("reply", msg)); self.q.put(("status", "Hazır")); self.busy = False
+            return
+
         # Elle çevrimdışı mod seçildiyse yerel modeli kullan (internet olsa bile)
         if self.provider == "offline":
             self.on_ui(self._restore)
@@ -2527,6 +3420,12 @@ class App:
             names = {"gemini": "Gemini", "gpt": "ChatGPT"}
             n = names.get(self.provider, self.provider)
             if e.code == 429:
+                if self.provider == "gemini":
+                    u = load_json(USAGE_FILE, {})
+                    if u.get("date") == datetime.now().strftime("%Y-%m-%d") and u.get("count", 0) >= GEMINI_DAILY_LIMIT * GEMINI_WARN_AT:
+                        return (f"{n} bugünkü ücretsiz günlük limitin dolmuş görünüyor "
+                                f"({u.get('count')} istek). Gece yarısı (Pasifik saati) sıfırlanır. "
+                                "İstersen 'çevrimdışına geç' diyerek internetsiz moda geçebilirim.")
                 return f"{n} ücretsiz kotası şu an dolu (dakikalık limit). Bir dakika bekleyip tekrar dene."
             if e.code in (401, 403):
                 return f"{n} API anahtarı geçersiz ya da yetkisiz. Ayarlardan/config'ten kontrol et."
@@ -2537,6 +3436,8 @@ class App:
             log(f"{self.provider} hatası: {e!r}")
             return "İnternet bağlantısı zayıf ya da yanıt gelmedi. Bağlantını kontrol edip tekrar dener misin?"
         self.chat_history.append({"role": "assistant", "content": reply})
+        if self.provider == "gemini":
+            reply += note_gemini_call()
         return reply
 
     def _offline(self, text):
@@ -2634,6 +3535,10 @@ class App:
             cfg = load_json(CONFIG_FILE, {})
             cfg["phone_token"] = token
             save_json(CONFIG_FILE, cfg)
+        # Mesh: kendi makinelerin arası paylaşılan takım anahtarı + makine adı
+        self.team_token = str(cfg.get("team_token", "")).strip()
+        self.machine_name = str(cfg.get("machine_name", "")).strip() or default_machine_name()
+        self.phone_token = token
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -2641,6 +3546,7 @@ class App:
             s.close()
         except OSError:
             ip = "?"
+        self.my_ip = ip
         app = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -2661,34 +3567,42 @@ class App:
                     data = json.loads(self.rfile.read(min(n, 100_000)) or b"{}")
                 except ValueError:
                     return self._reply(400, {"error": "bad json"})
-                if not secrets.compare_digest(str(data.get("token", "")), token):
-                    log(f"telefon: yanlış kod ({self.client_address[0]})")
+                given = str(data.get("token", ""))
+                is_phone = secrets.compare_digest(given, token)
+                is_peer = bool(app.team_token) and secrets.compare_digest(given, app.team_token)
+                if not (is_phone or is_peer):
+                    log("bağlantı: yanlış kod")  # gizlilik: istemci IP'si kaydedilmez
                     return self._reply(403, {"error": "Kod yanlış"})
+                if self.path == "/whoami":
+                    return self._reply(200, {"name": app.machine_name, "os": os.name})
                 if self.path == "/ping":
-                    return self._reply(200, {"reply": "Bilgisayardaki JARVIS'e bağlandın."})
+                    return self._reply(200, {"reply": f"{app.machine_name} JARVIS'ine bağlandın."})
                 if self.path != "/ask" or not data.get("text"):
                     return self._reply(404, {"error": "bulunamadı"})
                 if app.busy:
-                    return self._reply(200, {"reply": "Bilgisayardaki JARVIS şu an başka bir işle meşgul."})
+                    return self._reply(200, {"reply": f"{app.machine_name} JARVIS şu an başka bir işle meşgul."})
                 app.busy = True
                 app.stop_event.clear()
+                app._no_relay = bool(data.get("relay"))  # eşten geldiyse tekrar eşe iletme (döngü önleme)
                 text = data["text"]
-                app.q.put(("info", f"📱 Telefondan: {text}"))
+                kaynak = "🔗 Eşten" if is_peer else "📱 Telefondan"
+                app.q.put(("info", f"{kaynak}: {text}"))
                 try:
                     if app.provider in ("gemini", "gpt"):
-                        reply = app._alt_chat(text)
+                        reply = app._alt_chat(text)  # kota uyarısı içeride ekleniyor
                     elif app.provider == "offline":
                         reply = app._offline(text)
                     else:
                         reply = app.brain.ask(text, on_tool=lambda t: app.q.put(("status", f"{t}…")))
                 except Exception as e:
-                    log(f"telefon isteği hatası: {e!r}")
-                    reply = f"Bilgisayarda hata oldu: {type(e).__name__}"
+                    log(f"uzak istek hatası: {e!r}")
+                    reply = f"{app.machine_name}'de hata oldu: {type(e).__name__}"
                 finally:
                     app.on_ui(app._restore)
                     app.q.put(("status", "Hazır"))
+                    app._no_relay = False
                     app.busy = False
-                app.q.put(("info", f"📱 Yanıt: {reply}"))
+                app.q.put(("info", f"↩️ Yanıt: {reply}"))
                 self._reply(200, {"reply": reply})
 
         try:
@@ -2698,8 +3612,60 @@ class App:
             return
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self._write("info", f"📱 Telefon (aynı Wi-Fi) — adres: {ip}:8765   kod: {token}")
+        self._write("info", f"🖥️ Bu makine: {self.machine_name}")
+
+        # Mesh: aynı ağdaki kendi makinelerinle birbirinizi otomatik bulun ve komut verin
+        if self.team_token:
+            threading.Thread(target=self._mesh_beacon, daemon=True).start()
+            threading.Thread(target=self._mesh_listen, daemon=True).start()
+            self._write("info", "🔗 Mesh açık: aynı ağdaki diğer JARVIS makinelerini otomatik buluyorum. "
+                                "Diğer makinelere komut için 'kali'de … yap' / 'windows'ta … yap' de.")
+        else:
+            self._write("info", "🔗 Makineleri (Windows↔Kali) birbirine bağlamak için: bir makinede "
+                                "'mesh kur' de, çıkan takım kodunu diğer makinenin config/api_keys.json "
+                                "içine \"team_token\" olarak yaz. Sonra ikisi de birbirini bulur.")
+
         if cfg.get("web_remote_access", True) and CLOUDFLARED and (not isinstance(CLOUDFLARED, Path) or CLOUDFLARED.exists()):
             threading.Thread(target=self._start_tunnel, args=(token,), daemon=True).start()
+
+    def _mesh_beacon(self):
+        """Aynı ağa 'ben buradayım' yayını yapar (ad + port). Token yayınlanmaz."""
+        import socket
+        msg = json.dumps({"jarvis": True, "name": self.machine_name, "port": 8765}).encode("utf-8")
+        while True:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                s.sendto(msg, ("255.255.255.255", 8766))
+                s.close()
+            except OSError:
+                pass
+            time.sleep(5)
+
+    def _mesh_listen(self):
+        """Diğer JARVIS yayınlarını dinler ve peer kaydını günceller."""
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("", 8766))
+        except OSError as e:
+            log(f"mesh dinleyici açılamadı: {e!r}")
+            return
+        while True:
+            try:
+                raw, addr = s.recvfrom(2048)
+                d = json.loads(raw)
+                if not d.get("jarvis") or d.get("name") == self.machine_name:
+                    continue
+                name = str(d.get("name", "?"))[:40]
+                new = name not in self.peers
+                self.peers[name] = {"host": addr[0], "port": int(d.get("port", 8765)),
+                                    "last": time.time()}
+                if new:
+                    self.q.put(("info", f"🔗 Ağda bulundu: {name} ({addr[0]})"))
+            except (OSError, ValueError):
+                continue
 
     def _start_tunnel(self, token):
         """cloudflared ile internetten erişilebilir genel bir adres açar (her yerden yönetim)."""
