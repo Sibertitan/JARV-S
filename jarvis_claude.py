@@ -118,8 +118,13 @@ def tor_socks_ready():
         return False
 
 
+class AnonymityError(Exception):
+    """Anonim mod açıkken Tor üzerinden istek yapılamadı — sızıntı olmasın diye istek iptal edildi."""
+
+
 def net_urlopen(req, timeout=90):
-    """Anonim mod açıksa isteği Tor SOCKS5 üzerinden, değilse normal açar."""
+    """Anonim mod açıksa isteği Tor SOCKS5 üzerinden açar. Tor başarısızsa DOĞRUDAN BAĞLANMAZ
+    (fail-closed): gerçek IP'nin sızmaması için hata verir. Anonim mod kapalıysa normal açar."""
     if ANON["on"]:
         try:
             import socks  # PySocks
@@ -128,9 +133,9 @@ def net_urlopen(req, timeout=90):
                 SocksiPyHandler(socks.SOCKS5, TOR_SOCKS[0], TOR_SOCKS[1], rdns=True))
             return opener.open(req, timeout=timeout)
         except ImportError:
-            log("PySocks kurulu değil; anonim istek normal bağlantıya düştü")
+            raise AnonymityError("PySocks kurulu değil; anonim istek yapılamıyor (fail-closed, doğrudan bağlanmadım).")
         except Exception as e:
-            log(f"Tor üzerinden istek başarısız ({e}); normal bağlantı deneniyor")
+            raise AnonymityError(f"Tor üzerinden istek başarısız ({e}); gerçek IP sızmasın diye iptal ettim.")
     return urllib.request.urlopen(req, timeout=timeout)
 
 
@@ -177,6 +182,51 @@ def tor_exit_ip():
         return data.get("IP", "?"), bool(data.get("IsTor"))
     except Exception as e:
         return f"(alınamadı: {e})", False
+
+
+def active_iface():
+    """Varsayılan ağ arayüzünü döndürür (ör. eth0/wlan0). Bulamazsa None."""
+    if os.name == "nt":
+        return None
+    try:
+        r = subprocess.run(["ip", "route", "get", "1.1.1.1"], capture_output=True, text=True, timeout=5)
+        m = re.search(r"\bdev\s+(\S+)", r.stdout)
+        if m:
+            return m.group(1)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for i in ("wlan0", "eth0"):
+        if os.path.isdir(f"/sys/class/net/{i}"):
+            return i
+    return None
+
+
+def current_mac(iface):
+    try:
+        return open(f"/sys/class/net/{iface}/address").read().strip()
+    except OSError:
+        return "?"
+
+
+def randomize_mac(iface):
+    """macchanger ile arayüzün MAC adresini rastgele yapar. (başarı, mesaj) döner."""
+    if not iface:
+        return False, "Aktif ağ arayüzü bulunamadı."
+    mc = shutil.which("macchanger")
+    if not mc:
+        return False, "macchanger kurulu değil (sudo apt install macchanger)."
+    sudo = ["sudo"] if hasattr(os, "geteuid") and os.geteuid() != 0 else []
+    old = current_mac(iface)
+    try:
+        subprocess.run(sudo + ["ip", "link", "set", iface, "down"], capture_output=True, timeout=10)
+        r = subprocess.run(sudo + [mc, "-r", iface], capture_output=True, text=True, timeout=15)
+        subprocess.run(sudo + ["ip", "link", "set", iface, "up"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"MAC değiştirilemedi: {e}"
+    new = current_mac(iface)
+    if new != old and new != "?":
+        return True, f"{iface} MAC değişti: {old} → {new}"
+    return False, f"MAC değişmedi ({r.stdout.strip()[:200] or r.stderr.strip()[:200]})"
 
 
 def log(msg):
@@ -728,10 +778,11 @@ TOOLS = [
                            "cpu": {"type": "integer", "description": "create için çekirdek sayısı, varsayılan 4"}}, ["action"])},
     {"name": "anonymous_mode",
      "description": ("Tor anonim modu: JARVIS'in KENDİ web isteklerini (Gemini, arama, hava durumu) yerel Tor "
-                     "üzerinden geçirip çıkış IP'sini gizler. on: açar; off: kapatır; new_ip: yeni Tor devresi "
-                     "alıp çıkış IP'sini değiştirir; status: durumu ve mevcut çıkış IP'sini gösterir. "
-                     "Kullanıcı 'anonim ol / gizli kal / ip değiştir / yeni ip' derse bunu kullan. Yalnızca Kali/Linux."),
-     "input_schema": _obj({"action": {"type": "string", "enum": ["on", "off", "new_ip", "status"]}}, [])},
+                     "üzerinden geçirip çıkış IP'sini gizler; FAIL-CLOSED (Tor düşerse gerçek IP sızmasın diye "
+                     "istek iptal edilir). on: açar (+ MAC'i rastgeleler); off: kapatır; new_ip: yeni Tor devresi/IP; "
+                     "mac: donanım (MAC) adresini rastgeler; status: kapsamlı anonimlik durumu (çıkış IP, MAC, makine adı). "
+                     "Kullanıcı 'anonim ol / gizli kal / ip değiştir / yeni ip / yeni mac / mac değiştir' derse kullan. Yalnızca Kali/Linux."),
+     "input_schema": _obj({"action": {"type": "string", "enum": ["on", "off", "new_ip", "mac", "status"]}}, [])},
     {"name": "remote_jarvis",
      "description": ("Aynı ağdaki BAŞKA bir JARVIS makinesine (ör. Kali ya da Windows) doğal dilde komut gönderir "
                      "ve yanıtını getirir. Kullanıcı 'Kali'de şunu yap', 'Windows'ta şunu aç', 'öbür bilgisayarda "
@@ -2362,22 +2413,39 @@ tools.syncTime = "TRUE"
                 ip, is_tor = tor_exit_ip()
                 return f"{msg} Yeni çıkış IP: {ip}" + ("" if is_tor else " (Tor doğrulanamadı)")
             return msg
-        # status
+        if action in ("mac", "randomize_mac", "yeni_mac"):
+            ok, msg = randomize_mac(active_iface())
+            return msg
+        # status — kapsamlı anonimlik kontrolü
+        iface = active_iface()
+        lines = [f"Anonim mod: {'AÇIK' if ANON['on'] else 'KAPALI'} (fail-closed: Tor düşerse istek iptal)"]
+        if ANON["on"]:
+            ip, is_tor = tor_exit_ip()
+            lines.append(f"Çıkış IP: {ip}" + (" (Tor doğrulandı)" if is_tor else " (Tor DOĞRULANAMADI)"))
+        if iface:
+            lines.append(f"Arayüz: {iface}  MAC: {current_mac(iface)}")
+        import socket as _s
+        lines.append(f"Makine adı: {_s.gethostname()}")
         if not ANON["on"]:
-            return "Anonim mod: KAPALI. 'anonim mod aç' dersem web isteklerimi Tor'dan geçiririm."
-        ip, is_tor = tor_exit_ip()
-        return f"Anonim mod: AÇIK. Çıkış IP: {ip}" + (" (Tor doğrulandı)" if is_tor else " (Tor doğrulanamadı)")
+            lines.append("Açmak için 'anonim mod aç'. MAC değiştirmek için 'yeni mac'.")
+        return "\n".join(lines)
 
     def _anon_enable(self):
         ANON["on"] = True
         cfg = load_json(CONFIG_FILE, {})
         cfg["anonymous_mode"] = True
         save_json(CONFIG_FILE, cfg)
+        extra = ""
+        if os.name != "nt" and cfg.get("anon_randomize_mac", True):
+            ok, mmsg = randomize_mac(active_iface())
+            extra = "\n" + mmsg
         ip, is_tor = tor_exit_ip()
-        return (f"Anonim mod açıldı — web isteklerim artık Tor üzerinden gidiyor. Çıkış IP: {ip}"
-                + (" (Tor doğrulandı)." if is_tor else " (Tor doğrulanamadı; yine de deniyorum).")
-                + " 'yeni ip' dersem devreyi değiştirip IP'yi yenilerim. Not: dışarıdaki tarayıcı "
-                  "bundan etkilenmez; tam gizlilik için tarayıcı tarafında Tor Browser kullan.")
+        return (f"Anonim mod açıldı — web isteklerim Tor üzerinden gidiyor (fail-closed: Tor düşerse "
+                f"gerçek IP sızmasın diye istek iptal edilir). Çıkış IP: {ip}"
+                + (" (Tor doğrulandı)." if is_tor else " (Tor doğrulanamadı).")
+                + extra
+                + " 'yeni ip' devreyi, 'yeni mac' donanım adresini değiştirir. Not: dışarıdaki tarayıcı "
+                  "bundan etkilenmez; tam gizlilik için Tor Browser kullan.")
 
     def t_remote_jarvis(self, target, command=None):
         """Ağdaki başka bir JARVIS makinesine (ör. kali/windows) komut gönderir, yanıtı getirir."""
@@ -3631,7 +3699,9 @@ class App:
 
         # Anonim mod / yeni IP sözlü kısayolları (araç çağrısına gerek kalmadan)
         anon_act = None
-        if re.search(r"\byeni ip\b|ip('?y[ıi])? de[ğg]i[şs]tir|ip yenile|devre de[ğg]i[şs]tir", low):
+        if re.search(r"yeni mac|mac de[ğg]i[şs]tir|mac yenile|donan[ıi]m adresi", low):
+            anon_act = "mac"
+        elif re.search(r"\byeni ip\b|ip('?y[ıi])? de[ğg]i[şs]tir|ip yenile|devre de[ğg]i[şs]tir", low):
             anon_act = "new_ip"
         elif (("anonim" in low or "gizli" in low or "tor" in low) and
               any(w in low for w in ("aç", "başlat", "ol", "geç", "aktif"))):
