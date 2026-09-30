@@ -59,13 +59,13 @@ Sohbet, mikrofon, hatırlatıcılar ve telefon üzerinden soru sorma Kali'de ça
 
 ## Windows ve Android
 
-Windows'taki özgün `JARVIS Ucretsiz.exe` dosyası korunmuştur. Güncel kaynaklardan üretilen Windows paketi `JARVIS Integrated 2026-09-30 v3.exe` dosyasıdır. Android'de JARVIS istemcisi `android/app/build/outputs/apk/debug/app-debug.apk` konumundadır. İstemci Gemini anahtarını telefona kopyalamaz; açık ve ağa erişilebilir bir Windows/Kali JARVIS bilgisayarına bağlanır. Aynı Wi-Fi'da bilgisayarın yerel IP/port bilgisini kullanın. Dış ağ erişimi için bilgisayarda güvenli biçimde yapılandırılmış tünel gerekir.
+Windows'taki özgün `JARVIS Ucretsiz.exe` dosyası korunmuştur. Güncel kaynaklardan üretilen Windows paketi `JARVIS Integrated 2026-09-30 v5.exe` dosyasıdır. Android'de JARVIS istemcisi `android/app/build/outputs/apk/debug/app-debug.apk` konumundadır. İstemci Gemini anahtarını telefona kopyalamaz; açık ve ağa erişilebilir bir Windows/Kali JARVIS bilgisayarına bağlanır. Aynı Wi-Fi'da bilgisayarın yerel IP/port bilgisini kullanın. Dış ağ erişimi için bilgisayarda güvenli biçimde yapılandırılmış tünel gerekir.
 
 Android APK bir masaüstü eşlikçi istemcisidir; Windows/Kali uygulamasındaki fare-klavye ve yerel dosya özelliklerini Android'in içinde çalıştırmaz. APK debug imzasıyla derlenip Android 35 emülatörüne kuruldu; JARVIS `/ping` ve çevrimdışı test yanıtıyla `/ask` bağlantısı doğrulandı. Fiziksel telefon ve gerçek Wi-Fi yönlendirici testi yapılmadı. Kali araçları Linux'a özgüdür; Windows `.exe` veya Android APK içine taşınamaz ve üç platformda aynı yerel araçların bulunması garanti edilemez.
 
 Android istemcisinin kaynak projesi `android/` klasöründedir. Güncel APK'yı üretmek için bu klasörü Android Studio ile açın veya Android SDK Platform 35 kurulu bir makinede `gradlew assembleDebug` çalıştırın. İstemci aynı Wi-Fi üzerindeki Windows/Kali JARVIS sunucusuna bağlanır; Gemini anahtarı yalnızca bilgisayardaki `config/api_keys.json` dosyasında kalır. Yeni istemci APK'sı eski APK'nın üzerine kurulmak yerine ayrı uygulama olarak kurulabilir.
 
-Windows kaynak paketi `JARVIS Integrated 2026-09-30 v3.exe`, Android debug paketi `android/app/build/outputs/apk/debug/app-debug.apk` konumundadır. Bunlar özgün Windows EXE'si ve telefondaki APK'nın üzerine yazmaz. Android paketi test/debug imzası kullanır; mağaza veya genel dağıtım sürümü değildir.
+Windows kaynak paketi `JARVIS Integrated 2026-09-30 v5.exe`, Android debug paketi `android/app/build/outputs/apk/debug/app-debug.apk` konumundadır. Bunlar özgün Windows EXE'si ve telefondaki APK'nın üzerine yazmaz. Android paketi test/debug imzası kullanır; mağaza veya genel dağıtım sürümü değildir.
 
 Windows paketi `--self-test` parametresiyle açılırsa arayüz, mikrofon, telefon sunucusu veya tünel başlatmadan Headroom'u ve yapılandırılmış MCP sunucularını kontrol eder. İşlem başarılıysa `0`, başarısızsa sıfır dışı çıkış kodu döner.
 
