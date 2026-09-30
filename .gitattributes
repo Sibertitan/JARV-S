@@ -1,0 +1,9 @@
+# Kali/Linux betikleri her ortamda LF satir sonuyla kalmali (CRLF onlari bozar)
+*.sh text eol=lf
+run_kali.sh text eol=lf
+install_kali.sh text eol=lf
+
+# Windows betikleri CRLF kalsin
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
