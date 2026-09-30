@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "davinci-resolve": {
+      "command": "C:/Python312/python.exe",
+      "args": ["C:/path/to/davinci-resolve-mcp/src/server.py"],
+      "cwd": "C:/path/to/davinci-resolve-mcp"
+    },
+    "omniroute": {
+      "command": "node",
+      "args": ["/path/to/JARVIS/omniroute_mcp_stdio.mjs"],
+      "cwd": "/path/to/omniroute-install",
+      "env": {
+        "OMNIROUTE_PACKAGE_ROOT": "/path/to/omniroute-install/node_modules/omniroute",
+        "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128"
+      }
+    }
+  }
+}

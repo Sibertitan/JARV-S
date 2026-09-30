@@ -59,7 +59,45 @@ Sohbet, mikrofon, hatırlatıcılar ve telefon üzerinden soru sorma Kali'de ça
 
 ## Windows ve Android
 
-Windows'ta `JARVIS Ucretsiz.exe` çalıştırılabilir. Android'de `JARVIS_Ucretsiz_Telefon.apk` telefona kurulur. Kali'den erişim için Android istemcisi, uygulama açık olan Kali bilgisayarının IP/port bilgilerine bağlanmalıdır.
+Windows'taki özgün `JARVIS Ucretsiz.exe` dosyası korunmuştur. Güncel kaynaklardan üretilen Windows paketi `JARVIS Integrated 2026-09-30 v3.exe` dosyasıdır. Android'de JARVIS istemcisi `android/app/build/outputs/apk/debug/app-debug.apk` konumundadır. İstemci Gemini anahtarını telefona kopyalamaz; açık ve ağa erişilebilir bir Windows/Kali JARVIS bilgisayarına bağlanır. Aynı Wi-Fi'da bilgisayarın yerel IP/port bilgisini kullanın. Dış ağ erişimi için bilgisayarda güvenli biçimde yapılandırılmış tünel gerekir.
+
+Android APK bir masaüstü eşlikçi istemcisidir; Windows/Kali uygulamasındaki fare-klavye ve yerel dosya özelliklerini Android'in içinde çalıştırmaz. APK debug imzasıyla derlenip Android 35 emülatörüne kuruldu; JARVIS `/ping` ve çevrimdışı test yanıtıyla `/ask` bağlantısı doğrulandı. Fiziksel telefon ve gerçek Wi-Fi yönlendirici testi yapılmadı. Kali araçları Linux'a özgüdür; Windows `.exe` veya Android APK içine taşınamaz ve üç platformda aynı yerel araçların bulunması garanti edilemez.
+
+Android istemcisinin kaynak projesi `android/` klasöründedir. Güncel APK'yı üretmek için bu klasörü Android Studio ile açın veya Android SDK Platform 35 kurulu bir makinede `gradlew assembleDebug` çalıştırın. İstemci aynı Wi-Fi üzerindeki Windows/Kali JARVIS sunucusuna bağlanır; Gemini anahtarı yalnızca bilgisayardaki `config/api_keys.json` dosyasında kalır. Yeni istemci APK'sı eski APK'nın üzerine kurulmak yerine ayrı uygulama olarak kurulabilir.
+
+Windows kaynak paketi `JARVIS Integrated 2026-09-30 v3.exe`, Android debug paketi `android/app/build/outputs/apk/debug/app-debug.apk` konumundadır. Bunlar özgün Windows EXE'si ve telefondaki APK'nın üzerine yazmaz. Android paketi test/debug imzası kullanır; mağaza veya genel dağıtım sürümü değildir.
+
+Windows paketi `--self-test` parametresiyle açılırsa arayüz, mikrofon, telefon sunucusu veya tünel başlatmadan Headroom'u ve yapılandırılmış MCP sunucularını kontrol eder. İşlem başarılıysa `0`, başarısızsa sıfır dışı çıkış kodu döner.
+
+Kali kurulum betiği temel uygulama bağımlılıklarına ek olarak yalnızca savunma/adli inceleme araçlarının sınırlı bir listesini kurar. `kali-linux-everything`, ağ saldırısı, parola kırma ve istismar framework'leri topluca kurulmaz veya JARVIS araç listesine açılmaz. Bu nedenle Kali'nin bütün framework'lerinin bulunduğu iddia edilmez.
+
+## OmniRoute ve yerel MCP sunucuları
+
+OmniRoute isteğe bağlı, bilgisayarda çalışan bir ağ geçididir; kendi başına model veya ücretsiz kota sağlamaz. Node.js desteklenen bir sürümle yerel OmniRoute kurup `omniroute` ile başlatın. Dashboard/API varsayılan olarak `http://127.0.0.1:20128` üzerinde kalmalıdır; dış ağa açmayın. OmniRoute dashboard'unda Gemini sağlayıcısına JARVIS'te zaten kullandığınız aynı Gemini API anahtarını ekleyin. OmniRoute bu sağlayıcı kimlik bilgisini kendi yerel veritabanında ayrıca saklar; yeni bir Gemini anahtarı gerekmez.
+
+JARVIS `config/api_keys.json` ayarına `omniroute_url` (ör. `http://127.0.0.1:20128/v1`) ve isteğe bağlı `omniroute_model` (varsayılan `auto`) eklenebilir. `switch_brain` aracıyla OmniRoute'a geçilebilir; URL ayarlıysa Gemini kota hatasında da yerel OmniRoute'a bir kez yönelmeyi dener. Bu istek yine Gemini'nin çevrimiçi servisine gider ve aynı kota/şartlara tabidir. Üçüncü taraf ücretsiz sağlayıcılar ayrıca hesap, oturum veya kendi limitlerini gerektirebilir; otomatik ya da sınırsız ücretsiz çalışma garantisi yoktur. OmniRoute JARVIS'in EXE/APK dosyalarına gömülmez.
+
+JARVIS, MCP araçlarını model isteğine yüzlerce şema eklemeden yerel olarak arar ve gereken aracı çağırır. OmniRoute MCP bağlantısı `omniroute_mcp_stdio.mjs` yerel başlatıcısını kullanır; kurulumdaki Node.js ve OmniRoute paket yollarını `config/mcp_servers.json` içinde ayarlayın. Bu başlatıcı, Türkçe karakter/boşluk içeren Windows yollarında resmi CLI başlatıcısının kapanması sorununu aşar ve OmniRoute'un MCP stdout korumasını yükler. OmniRoute ağ geçidi yerelde çalışmalıdır. Salt-okunur MCP araçları çağrılabilir; yazma/değiştirme araçları yerel onay ister.
+
+## Kalıcı oturum hafızası ve kendini geliştirme
+
+JARVIS, [claude-mem](https://github.com/thedotmack/claude-mem) fikrini yerel olarak uygular: uzun ya da önemli bir işi bitirince `remember_session` ile 1-3 cümlelik bir oturum özeti `memory/session_memory.jsonl` dosyasına yazılır. Bu özetler bir sonraki açılışta konuşma bağlamına otomatik geri yüklenir; `recall_sessions` ile de aranabilir. Böylece kaldığımız yerden devam edilebilir.
+
+Ayrıca [one-skill-to-rule-them-all / task-observer](https://github.com/rebelytics/one-skill-to-rule-them-all) fikri yerel bir gözlem günlüğü olarak eklendi: kullanıcı düzeltmesi, yinelenen tercih/iş ya da bir eksik fark edildiğinde `observe_self` ile `memory/observations.jsonl` dosyasına sessizce not düşülür; `review_observations` ile gözden geçirilir. Amaç JARVIS'in zamanla daha isabetli çalışması. Her iki günlük de yereldir, `memory/` klasörü Git tarafından izlenmez ve dış bir servise gönderilmez.
+
+[claude-code-setup](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-code-setup) eklentisi Claude Code'a özgü olduğundan JARVIS'e doğrudan kurulamaz; fikri (projeyi inceleyip kişiye özel otomasyon önerileri sunmak, salt okunur) `recommend_setup` aracı olarak yerel biçimde uygulandı. Bu araç JARVIS'in kendi ortamını (sağlayıcı anahtarı, OmniRoute yedeği, MCP yapılandırması, oturum hafızası kullanımı, anımsatıcı/zamanlı görevler, çevrimdışı Vosk modeli ve Linux'ta Tor/Kali araçları) inceleyip önceliklendirilmiş, uygulanabilir öneriler döndürür; hiçbir ayarı kendiliğinden değiştirmez. "Kendini kur / ne eksik / kurulumumu iyileştir" dediğinde çalışır.
+
+## Yerleşik kod ajanı (codex)
+
+JARVIS'in kendi kod yazıcısı vardır ve ücretsiz Gemini beyniyle çalışır. `code_run` aracı verilen kodu bir dosyaya yazar, **çalıştırır** ve çıktısını (stdout + stderr + çıkış kodu) geri döndürür; böylece JARVIS yaz → çalıştır → hatayı gör → düzelt döngüsüyle çalışan program üretir. Python, Node.js, bash ve PowerShell desteklenir; hem Windows hem Kali/Linux'ta yereldir, ek API gerektirmez. Kod çalıştırma her seferinde kullanıcı onayı ister. Uygulama/oyun gibi çok dosyalı projeler için `write_project_file` + `run_project`, GitHub'a yükleme için `github` aracı vardır.
+
+## Telefondan iki işletim sistemini de yönetme
+
+Android APK ince bir istemcidir: yazdığın komutu aynı Wi-Fi'daki JARVIS bilgisayarına `/ask` ile iletir. Bu istek **tam araçlı ajanı** çalıştırır (ücretsiz Gemini modu dahil), yani telefondan bilgisayarın tüm yeteneklerini kullanırsın: uygulama açma, ekran kontrolü, kod yazma/çalıştırma, dosya işlemleri ve Kali'de yetkili `lab_test`. JARVIS Windows'ta çalışıyorsa telefondan Windows'u, Kali'de çalışıyorsa Kali'yi yönetirsin. Mesh açıkken bağlandığın makine komutu diğerine iletebildiği için tek telefondan hem Windows hem Kali'ye erişebilirsin.
+
+## DaVinci Resolve MCP
+
+Bu Windows kopyasında [davinci-resolve-mcp](https://github.com/samuelgursky/davinci-resolve-mcp) kaynakları `work/davinci-resolve-mcp/` altında bulunur ve gizli `config/mcp_servers.json` ayarı bu bilgisayardaki Python'a göre hazırlanmıştır; sunucu 37 aracı keşfetti ve Resolve'u başlatmayan `runtime_mode` çağrısı doğrulandı. Linux/Kali kopyasında depoyu ve MCP Python bağımlılıklarını kurup `config/mcp_servers.example.json` içindeki komut/yolları uyarlayın. Harici betikleme API'si Resolve sürümü/edition ve ayarlarına bağlıdır; canlı düzenleme bu ortamda doğrulanmadı. Yalnızca güvendiğiniz yerel MCP sunucularını yapılandırın.
 
 ## Anahtar güvenliği
 
