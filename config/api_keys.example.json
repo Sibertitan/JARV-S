@@ -1,6 +1,8 @@
 {
   "free_version": true,
   "gemini_api_key": "BURAYA_KENDI_API_ANAHTARINIZI_YAZIN",
+  "omniroute_url": "http://127.0.0.1:20128/v1",
+  "omniroute_model": "auto",
   "voice": "Charon",
   "web_remote_access": true,
   "team_token": "",

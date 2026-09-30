@@ -1,6 +1,7 @@
 # Kişisel/gizli — depoya girmesin
 config/api_keys.json
 config/lab_config.json
+config/mcp_servers.json
 memory/
 jarvis_log.txt
 hata.txt
@@ -18,3 +19,10 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# Android build and signing state
+android/.gradle/
+android/local.properties
+android/key.properties
+android/**/*.jks
+work/

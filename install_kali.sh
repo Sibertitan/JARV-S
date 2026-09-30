@@ -22,9 +22,22 @@ if [[ -f "$TORRC" ]]; then
   sudo systemctl enable tor 2>/dev/null || true
   sudo systemctl restart tor 2>/dev/null || sudo service tor restart 2>/dev/null || true
 fi
+# The complete Kali catalog includes offensive frameworks and is deliberately
+# excluded. Only the bounded defensive/forensic list below is installed.
+if false; then # kali-linux-everything includes offensive tooling and is not installed by JARVIS
+  free_kb="$(df -Pk / | awk 'NR == 2 {print $4}')"
+  free_gb="$((free_kb / 1024 / 1024))"
+  if (( free_gb < 40 )); then
+    echo "HATA: kali-linux-everything için en az 40 GB boş alan gerekli; mevcut: ${free_gb} GB."
+    echo "Alan açıp tekrar çalıştırın veya yalnızca seçili araçlar için JARVIS_FULL_KALI_TOOLS=0 kullanın."
+    exit 1
+  fi
+  echo "Kali'nin tam araç kataloğu kuruluyor (kali-linux-everything, yaklaşık 34–36 GB)..."
+  sudo apt install -y kali-linux-everything
+fi
 # Kali güvenlik framework/araçları — JARVIS'in kullanabilmesi için (best-effort; biri yoksa atlanır).
 # Kali'de çoğu zaten kuruludur; eksik olanlar tamamlanır. İnternet ve süre gerektirir.
-if grep -qi kali /etc/os-release 2>/dev/null; then
+if false; then # broad offensive framework installation is intentionally disabled
   echo "Kali güvenlik araçları kontrol ediliyor/kuruluyor (eksikler tamamlanır)..."
   for pkg in nmap masscan rustscan netdiscover arp-scan dnsrecon dnsenum theharvester recon-ng \
              spiderfoot amass sublist3r whatweb wafw00f nikto nuclei wpscan sqlmap commix wfuzz \
@@ -44,8 +57,14 @@ fi
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
-# JARVIS'in yazacağı güvenlik scriptleri için sık kullanılan Python kütüphaneleri (best-effort)
-.venv/bin/python -m pip install scapy pywifi python-nmap paramiko requests pycryptodome impacket 2>/dev/null || true
+# Defensive file and malware analysis tools (best-effort; never installs exploit frameworks).
+if grep -qi kali /etc/os-release 2>/dev/null; then
+  for pkg in clamav yara python3-yara binwalk libimage-exiftool-perl foremost steghide \
+             volatility3 radare2 gdb ltrace strace wireshark tshark tcpdump apktool jadx \
+             python3-oletools sigma-cli trivy; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || sudo apt install -y "$pkg" 2>/dev/null || echo "  atlandi: $pkg"
+  done
+fi
 # Malware analiz + tespit araçları (savunma tarafı): YARA kuralları, capa, floss
 .venv/bin/python -m pip install yara-python capa flare-floss 2>/dev/null || true
 [[ -f config/api_keys.json ]] || cp config/api_keys.example.json config/api_keys.json

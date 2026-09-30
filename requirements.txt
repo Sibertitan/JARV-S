@@ -1,4 +1,6 @@
 anthropic
+headroom-ai==0.39.1
+mcp>=1.30.0,<2.0.0
 SpeechRecognition
 pyaudio
 psutil
