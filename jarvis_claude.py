@@ -1259,8 +1259,8 @@ class Computer:
             img = ImageGrab.grab()
             if img:
                 return img
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"ImageGrab ekran görüntüsü alamadı, pyautogui deneniyor: {e!r}")
         return self.pg.screenshot()  # scrot / gnome-screenshot kullanır
 
     def _shot(self, region=None):
@@ -3391,8 +3391,8 @@ class Voice:
             import win32com.client
             pythoncom.CoInitialize()
             win32com.client.Dispatch("SAPI.SpVoice").Speak(SV_TAG.sub(r"\1", text))
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Windows SAPI sesi çalışmadı: {e!r}")
 
     def _say(self, text):
         """Metni okur; <sv>...</sv> kısımlarını İsveççe sesle okur."""
@@ -4138,8 +4138,8 @@ class App:
         if os.name != "nt":          # Linux'ta siber açılış efekti (SİBER TİTAN + Anonymous maskesi)
             try:
                 show_cyber_intro(root)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"açılış efekti gösterilemedi: {e!r}")
 
         top = tk.Frame(root, bg=BG)
         top.pack(fill="x", padx=16, pady=(14, 6))
@@ -4872,6 +4872,10 @@ def _run_self_test():
                     return 3
         return 0
     except Exception:
+        # Sebep kaybolmasın: hem günlüğe hem stderr'e yaz (paketli EXE'de çıkış kodu tek ipucuydu).
+        err = traceback.format_exc()
+        original_log("self-test hatası:\n" + err)
+        print(err, file=sys.stderr)
         return 1
     finally:
         log = original_log

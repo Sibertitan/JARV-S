@@ -275,6 +275,16 @@ class RuntimeTests(unittest.TestCase):
         with patch.object(jarvis, "CONFIG_FILE", missing_config):
             self.assertEqual(jarvis._run_self_test(), 0)
 
+    def test_headless_self_test_failure_reports_cause(self):
+        import io
+        logged = []
+        stderr = io.StringIO()
+        with patch.object(jarvis, "_compress_tool_output", side_effect=RuntimeError("headroom bozuk")), \
+                patch.object(jarvis, "log", logged.append), patch.object(jarvis.sys, "stderr", stderr):
+            self.assertEqual(jarvis._run_self_test(), 1)
+        self.assertIn("headroom bozuk", stderr.getvalue())
+        self.assertTrue(any("headroom bozuk" in line for line in logged))
+
     def test_gemini_429_fallback_keeps_chat_turn_alternating(self):
         class Queue:
             def put(self, _item):
