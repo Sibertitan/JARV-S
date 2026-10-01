@@ -79,6 +79,10 @@ JARVIS `config/api_keys.json` ayarına `omniroute_url` (ör. `http://127.0.0.1:2
 
 JARVIS, MCP araçlarını model isteğine yüzlerce şema eklemeden yerel olarak arar ve gereken aracı çağırır. OmniRoute MCP bağlantısı `omniroute_mcp_stdio.mjs` yerel başlatıcısını kullanır; kurulumdaki Node.js ve OmniRoute paket yollarını `config/mcp_servers.json` içinde ayarlayın. Bu başlatıcı, Türkçe karakter/boşluk içeren Windows yollarında resmi CLI başlatıcısının kapanması sorununu aşar ve OmniRoute'un MCP stdout korumasını yükler. OmniRoute ağ geçidi yerelde çalışmalıdır. Salt-okunur MCP araçları çağrılabilir; yazma/değiştirme araçları yerel onay ister.
 
+## Yarım kalan görevler (checkpoint)
+
+Her istek (masaüstü, telefon, eş makine veya zamanlanmış görev) `memory/tasks/` altında bir görev olarak kaydedilir; her araç adımından sonra durum diske yazılır. JARVIS kapanır ya da çökerse bir sonraki açılışta yarım kalan görev gösterilir; "kaldığın yerden devam et" dediğinde JARVIS asıl isteği ve tamamlanan adımları alıp yalnızca kalan işi yapar (`tasks` aracı: list / resume / cancel). Parola, API anahtarı, token ve çerezler günlüğe yazılmadan önce gizlenir; son 50 görev tutulur.
+
 ## Kalıcı oturum hafızası ve kendini geliştirme
 
 JARVIS, [claude-mem](https://github.com/thedotmack/claude-mem) fikrini yerel olarak uygular: uzun ya da önemli bir işi bitirince `remember_session` ile 1-3 cümlelik bir oturum özeti `memory/session_memory.jsonl` dosyasına yazılır. Bu özetler bir sonraki açılışta konuşma bağlamına otomatik geri yüklenir; `recall_sessions` ile de aranabilir. Böylece kaldığımız yerden devam edilebilir.
@@ -98,6 +102,10 @@ Android APK ince bir istemcidir: yazdığın komutu aynı Wi-Fi'daki JARVIS bilg
 ## DaVinci Resolve MCP
 
 Bu Windows kopyasında [davinci-resolve-mcp](https://github.com/samuelgursky/davinci-resolve-mcp) kaynakları `work/davinci-resolve-mcp/` altında bulunur ve gizli `config/mcp_servers.json` ayarı bu bilgisayardaki Python'a göre hazırlanmıştır; sunucu 37 aracı keşfetti ve Resolve'u başlatmayan `runtime_mode` çağrısı doğrulandı. Linux/Kali kopyasında depoyu ve MCP Python bağımlılıklarını kurup `config/mcp_servers.example.json` içindeki komut/yolları uyarlayın. Harici betikleme API'si Resolve sürümü/edition ve ayarlarına bağlıdır; canlı düzenleme bu ortamda doğrulanmadı. Yalnızca güvendiğiniz yerel MCP sunucularını yapılandırın.
+
+## Midas (yalnızca simülasyon)
+
+Midas'ın resmi, herkese açık bir API'si olmadığı için JARVIS gerçek Midas hesabına bağlanmaz. `midas` aracı sentetik bir piyasada (`SIM.THYAO`, `SIM.ASELS`, `SIM.AAPL`, `SIM.SPY`) portföy, fiyat ve emir akışını simüle eder. Her emir onay bekler ve yalnızca masaüstündeki onay penceresinde onay verilirse simüle olarak gerçekleşir; otomatik işlem kapalıdır ve açılamaz. Ayrıntılar ve canlı erişimin neden yapılmadığı: [docs/MIDAS.md](docs/MIDAS.md).
 
 ## Anahtar güvenliği
 

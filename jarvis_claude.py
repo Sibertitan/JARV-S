@@ -37,6 +37,7 @@ from tkinter import messagebox
 
 import anthropic
 import psutil
+import jarvis_tasks
 try:
     from headroom.compress import compress as _headroom_compress
 except ImportError:
@@ -864,6 +865,15 @@ TOOLS = [
                            "project": {"type": "string", "description": "Kaydedileceği proje adı (varsayılan 'codex')"},
                            "filename": {"type": "string", "description": "Dosya adı (varsayılan dile göre)"},
                            "args": {"type": "string", "description": "İsteğe bağlı komut satırı argümanları"}}, ["code"])},
+    {"name": "midas",
+     "description": "Midas yatırım modülü — YALNIZCA SİMÜLASYON. Midas'ın resmi herkese açık API'si olmadığı için gerçek hesaba bağlanmaz; tüm veriler sentetiktir ve semboller 'SIM.' ile başlar (SIM.THYAO, SIM.ASELS, SIM.AAPL, SIM.SPY). action: status (mod/kurallar), portfolio (nakit+pozisyonlar), quote (symbol fiyatı), orders (emirler), order (emir oluşturur; HER ZAMAN onay bekler, kendiliğinden gerçekleşmez), approve (order_id'yi kullanıcıya masaüstü onay penceresiyle sorar, onaylarsa simüle gerçekleştirir), cancel (order_id). Kullanıcı gerçek Midas işlemi isterse bunun yapılamayacağını açıkça söyle.",
+     "input_schema": _obj({"action": {"type": "string", "enum": ["status", "portfolio", "quote", "orders", "order", "approve", "cancel"]},
+                           "symbol": {"type": "string"},
+                           "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                           "quantity": {"type": "number"},
+                           "order_type": {"type": "string", "enum": ["MARKET", "LIMIT"]},
+                           "limit_price": {"type": "number"},
+                           "order_id": {"type": "string"}}, ["action"])},
     {"name": "edit_image",
      "description": "Var olan bir fotoğrafı düzenler ve PNG/JPG olarak Resimler\\JARVIS Görseller'e kaydeder. operations: resize_w, crop_ratio (1:1,4:5,9:16,16:9), rotate, brightness/contrast/saturation/sharpness (1.0=aynı), filter (grayscale/sepia/blur/sharpen/auto/vivid/warm/cool), border, border_color.",
      "input_schema": _obj({"path": {"type": "string"}, "operations": {"type": "object"},
@@ -984,6 +994,10 @@ TOOLS = [
     {"name": "save_memory", "description": "Kullanıcı hakkında kalıcı bir bilgiyi hafızaya kaydeder.",
      "input_schema": _obj({"category": {"type": "string", "enum": ["identity", "preferences", "notes"]},
                            "key": {"type": "string"}, "value": {"type": "string"}}, ["category", "key", "value"])},
+    {"name": "tasks",
+     "description": "Görev günlüğü: JARVIS kapanırsa yarım kalan işleri kaldığı yerden sürdürür. action: list (son görevler ve durumları), resume (task_id verilmezse en son yarım kalan görev; asıl isteği ve tamamlanan adımları döndürür, sen kalan işi tamamlarsın), cancel (yarım kalan görevi kapatır). Kullanıcı 'kaldığın yerden devam et / yarım kalan görev' derse kullan.",
+     "input_schema": _obj({"action": {"type": "string", "enum": ["list", "resume", "cancel"]},
+                           "task_id": {"type": "string"}}, ["action"])},
     {"name": "search_history", "description": "Önceki kullanıcı/JARVIS konuşmalarını yerel günlükte anahtar kelimeyle arar; eski bir konu, karar veya konuşma ayrıntısı sorulduğunda kullan.",
      "input_schema": _obj({"query": {"type": "string", "description": "Günlükte aranacak sözcükler"}}, ["query"])},
     {"name": "mcp_list_tools", "description": "Yapılandırılmış yerel MCP entegrasyonlarında araç ara/listele (DaVinci Resolve, OmniRoute vb.). Bir MCP entegrasyonuna ihtiyaç varsa önce bunu kullan; query içine sunucu/işlev/konu yaz.",
@@ -1585,6 +1599,22 @@ class Tools:
         self.mcp = MCPToolBridge(CONFIG_FILE.parent / "mcp_servers.json", on_error=log)
 
     def run(self, name, args):
+        out, is_err = self._run_tool(name, args)
+        self.record_step(name, args, not is_err, out)
+        return out, is_err
+
+    def record_step(self, name, args, ok, out):
+        """Aktif görev varsa adımı görev günlüğüne yazar (kaldığı yerden devam için)."""
+        journal, task_id = getattr(self, "journal", None), getattr(self, "current_task", None)
+        if not journal or not task_id or name == "tasks":
+            return
+        try:
+            journal.record_step(task_id, name, args, ok,
+                                out if isinstance(out, str) else "(görsel/çoklu çıktı)")
+        except OSError as e:
+            log(f"görev günlüğü yazılamadı: {e!r}")
+
+    def _run_tool(self, name, args):
         if name.startswith("mcp__"):
             return self._call_mcp_tool(name, args), False
         fn = getattr(self, "t_" + name, None)
@@ -2552,6 +2582,60 @@ class Tools:
         out = (r.stdout + ("\n[stderr]\n" + r.stderr if r.stderr.strip() else "")).strip()
         return f"[{language} → {path.name}] çıkış kodu {r.returncode}\n" + ((out or "(çıktı yok)")[:8000])
 
+    def _midas_sim(self):
+        sim = getattr(self, "_midas", None)
+        if sim is None:
+            import jarvis_midas
+            cfg = load_json(CONFIG_FILE, {})
+            sim = jarvis_midas.MidasSimulator(
+                BASE / "memory" / "midas_sim.json", BASE / "memory" / "midas_audit.jsonl",
+                mode=cfg.get("midas_mode", "SIMULATION"),
+                max_order_value=cfg.get("midas_max_order_value", 10_000))
+            self._midas = sim
+        return sim
+
+    def t_midas(self, action, symbol=None, side=None, quantity=None, order_type="MARKET",
+                limit_price=None, order_id=None):
+        """Midas — yalnızca simülasyon/salt okunur; emirler kullanıcının masaüstü onayıyla gerçekleşir."""
+        import jarvis_midas
+        try:
+            sim = self._midas_sim()
+            if action == "status":
+                out = sim.status()
+            elif action == "portfolio":
+                out = sim.portfolio()
+            elif action == "quote":
+                out = sim.quote(symbol)
+            elif action == "orders":
+                out = sim.orders()
+            elif action == "order":
+                out = sim.place_order(symbol, side, quantity, order_type, limit_price)
+                if out["status"] == jarvis_midas.PENDING:
+                    out["note"] = "Emir onay bekliyor; kullanıcı onaylamadan gerçekleşmez (approve)."
+            elif action == "approve":
+                o = next((x for x in sim.orders() if x["id"] == order_id), None)
+                if o is None:
+                    return f"Emir bulunamadı: {order_id}"
+                if self.app is None or not hasattr(self.app, "ask_confirm"):
+                    return "Midas emir onayı için JARVIS masaüstü onay penceresi gerekli."
+                price = (o["limit_price"] if o["order_type"] == "LIMIT"
+                         else sim.quote(o["symbol"])["price"])
+                ok = self.app.ask_confirm(
+                    "Midas SİMÜLASYON emri onayı",
+                    f"SİMÜLASYON (gerçek para yok)\n\n{o['side']} {o['quantity']:g} {o['symbol']}\n"
+                    f"Tür: {o['order_type']}  Fiyat: {price}\nTahmini değer: {price * o['quantity']:.2f}\n\n"
+                    "Onaylıyor musun?")
+                if not ok:
+                    return "Kullanıcı emri onaylamadı; emir beklemede kaldı."
+                out = sim.approve(order_id, "kullanıcı (masaüstü onayı)")
+            elif action == "cancel":
+                out = sim.cancel(order_id)
+            else:
+                return "action: status/portfolio/quote/orders/order/approve/cancel olmalı."
+        except jarvis_midas.MidasError as e:
+            return f"Midas (simülasyon): {e}"
+        return json.dumps(out, ensure_ascii=False, indent=1)
+
     # ── Gemini/GPT için bilgisayar kontrolü (ekranı görüp tıklama) ──
     def _comp(self):
         return self.app._computer()
@@ -2957,6 +3041,34 @@ tools.syncTime = "TRUE"
         save_json(MEMORY_FILE, mem)
         return "Kaydedildi."
 
+    def t_tasks(self, action, task_id=None):
+        """Yarım kalan görevleri listeler, sürdürür veya kapatır."""
+        journal = getattr(self, "journal", None)
+        if journal is None:
+            return "Görev günlüğü açık değil."
+        if action == "list":
+            rows = [f"- {t['id']} [{t['status']}] {t['created']} · {len(t.get('steps', []))} adım · "
+                    f"{t.get('text', '')[:80]}" for t in journal.all()[:15]]
+            return "Son görevler:\n" + ("\n".join(rows) if rows else "(yok)")
+        if task_id:
+            try:
+                task = journal.get(task_id)
+            except ValueError as e:
+                return str(e)
+        else:
+            task = next((t for t in journal.all() if t.get("status") == jarvis_tasks.INTERRUPTED), None)
+        if task is None:
+            return "Yarım kalan görev bulunamadı." if not task_id else f"Görev bulunamadı: {task_id}"
+        if task.get("status") not in (jarvis_tasks.INTERRUPTED, jarvis_tasks.FAILED):
+            return f"Görev {task['id']} durumu {task['status']}; yalnızca yarım kalan/başarısız görevler sürdürülür."
+        if action == "cancel":
+            journal.set_status(task["id"], jarvis_tasks.CANCELLED)
+            return f"Görev kapatıldı: {task['id']}"
+        if action == "resume":
+            journal.set_status(task["id"], jarvis_tasks.RESUMED)
+            return journal.resume_prompt(task)
+        return "action: list/resume/cancel olmalı."
+
     def t_search_history(self, query):
         terms = [part.casefold() for part in str(query).split() if len(part) > 1]
         if not terms:
@@ -3334,6 +3446,7 @@ class Brain:
                 self.app.computer_allowed = True  # JARVIS kapanana kadar geçerli
             self.app.hide_for_control()
             out = self._computer().run(block.name, args)
+            self.tools.record_step(block.name, args, True, out)
             return {"type": "tool_result", "tool_use_id": block.id, "toolset_name": "computer",
                     "content": out if isinstance(out, list) else [{"type": "text", "text": out}]}
         out, is_err = self.tools.run(block.name, args)
@@ -3565,6 +3678,9 @@ GREETING = "Hoş geldiniz Ali İhsan Bey."
 TTS_VOICE_SV = "sv-SE-MattiasNeural"
 SV_TAG = re.compile(r"<sv>(.*?)</sv>", re.S)
 VOSK_TR = BASE / "offline" / "vosk-tr"
+PHONE_MAX_BODY = 100_000      # telefon/mesh isteği gövde sınırı (bayt)
+PHONE_MAX_FAILS = 10          # bu kadar yanlış koddan sonra ...
+PHONE_FAIL_WINDOW = 60        # ... bu süre (sn) boyunca o IP'den istek kabul edilmez
 CLOUDFLARED = (BASE / "offline" / "cloudflared.exe") if os.name == "nt" else shutil.which("cloudflared")
 
 
@@ -4255,6 +4371,7 @@ class App:
         root.bind("<Escape>", lambda e: self.voice.stop())
 
         self.tools = Tools(self)          # araçlar (beyinden bağımsız)
+        self.tools.journal = jarvis_tasks.TaskJournal(BASE / "memory" / "tasks")
         self._computer_obj = None
         self.offline_brain = OfflineBrain()
         self.chat_history = []            # gemini/gpt sohbet geçmişi
@@ -4284,6 +4401,14 @@ class App:
                             "ya da fareyi ekranın sol üst köşesine götür.\n")
         log("JARVIS başladı")
         self.q.put(("reply", GREETING))
+        try:
+            interrupted = self.tools.journal.recover_interrupted()
+        except OSError as e:
+            log(f"görev günlüğü okunamadı: {e!r}")
+            interrupted = []
+        for t in interrupted[:3]:
+            self._write("info", f"⏸️ Yarım kalan görev ({len(t.get('steps', []))} adım tamamlanmıştı): "
+                                f"{t.get('text', '')[:120]}\n   Sürdürmek için 'kaldığın yerden devam et' de.")
         threading.Thread(target=self._reminder_loop, daemon=True).start()
         threading.Thread(target=self._listen_loop, daemon=True).start()
         threading.Thread(target=self._schedule_loop, daemon=True).start()
@@ -4410,7 +4535,36 @@ class App:
         self.busy = True
         self.stop_event.clear()
         self.status.config(text="Düşünüyor…")
-        threading.Thread(target=self._work, args=(text,), daemon=True).start()
+        threading.Thread(target=self._work_tracked, args=(text,), daemon=True).start()
+
+    def _tracked(self, text, source, fn):
+        """fn()'i görev günlüğüne kaydederek çalıştırır; JARVIS çökerse görev RUNNING kalır ve
+        bir sonraki açılışta yarım kalan görev olarak sunulur."""
+        tools = getattr(self, "tools", None)
+        journal = getattr(tools, "journal", None)
+        if journal is None:
+            return fn()
+        task_id = None
+        try:
+            task_id = journal.start(text, getattr(self, "provider", ""), source)
+        except OSError as e:
+            log(f"görev günlüğü yazılamadı: {e!r}")
+        tools.current_task = task_id
+        status, result = jarvis_tasks.FAILED, None
+        try:
+            result = fn()
+            status = jarvis_tasks.COMPLETED
+            return result
+        finally:
+            tools.current_task = None
+            if task_id:
+                try:
+                    journal.finish(task_id, status, result if isinstance(result, str) else None)
+                except OSError as e:
+                    log(f"görev günlüğü yazılamadı: {e!r}")
+
+    def _work_tracked(self, text, source="masaüstü"):
+        return self._tracked(text, source, lambda: self._work(text))
 
     def _work(self, text):
         # Beyin değiştirme: "gemini ol", "gpt ol", "normal jarvis ol", "claude'a dön" ...
@@ -4736,6 +4890,21 @@ class App:
                 pass
         self.my_ip = ip
         app = self
+        remote_lock = threading.Lock()   # aynı anda yalnızca bir uzak istek ajanı çalıştırır
+        failures = {}                    # istemci IP -> son başarısız kod denemelerinin zamanları
+        failures_lock = threading.Lock()
+
+        def throttled(client):
+            """Son 60 sn'de 10+ yanlış kod denemesi yapan IP'yi geçici olarak engeller."""
+            now = time.time()
+            with failures_lock:
+                recent = [t for t in failures.get(client, []) if now - t < PHONE_FAIL_WINDOW]
+                failures[client] = recent
+                return len(recent) >= PHONE_MAX_FAILS
+
+        def record_failure(client):
+            with failures_lock:
+                failures.setdefault(client, []).append(time.time())
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -4750,15 +4919,27 @@ class App:
                 self.wfile.write(body)
 
             def do_POST(self):
+                client = self.client_address[0]
+                if throttled(client):
+                    return self._reply(429, {"error": "Çok fazla yanlış kod denemesi; biraz bekle."})
                 try:
                     n = int(self.headers.get("Content-Length", 0))
-                    data = json.loads(self.rfile.read(min(n, 100_000)) or b"{}")
+                except ValueError:
+                    return self._reply(400, {"error": "bad json"})
+                if n < 0 or n > PHONE_MAX_BODY:
+                    return self._reply(413, {"error": "istek çok büyük"})
+                try:
+                    data = json.loads(self.rfile.read(n) or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError
                 except ValueError:
                     return self._reply(400, {"error": "bad json"})
                 given = str(data.get("token", ""))
-                is_phone = secrets.compare_digest(given, token)
-                is_peer = bool(app.team_token) and secrets.compare_digest(given, app.team_token)
+                is_phone = secrets.compare_digest(given.encode(), token.encode())
+                is_peer = bool(app.team_token) and secrets.compare_digest(
+                    given.encode(), app.team_token.encode())
                 if not (is_phone or is_peer):
+                    record_failure(client)
                     log("bağlantı: yanlış kod")  # gizlilik: istemci IP'si kaydedilmez
                     return self._reply(403, {"error": "Kod yanlış"})
                 if self.path == "/whoami":
@@ -4767,7 +4948,11 @@ class App:
                     return self._reply(200, {"reply": f"{app.machine_name} JARVIS'ine bağlandın."})
                 if self.path != "/ask" or not data.get("text"):
                     return self._reply(404, {"error": "bulunamadı"})
+                # Kontrol ve işaretleme tek adımda: iki uzak istek aynı anda ajanı çalıştıramaz.
+                if not remote_lock.acquire(blocking=False):
+                    return self._reply(200, {"reply": f"{app.machine_name} JARVIS şu an başka bir işle meşgul."})
                 if app.busy:
+                    remote_lock.release()
                     return self._reply(200, {"reply": f"{app.machine_name} JARVIS şu an başka bir işle meşgul."})
                 app.busy = True
                 app.stop_event.clear()
@@ -4775,13 +4960,15 @@ class App:
                 text = data["text"]
                 kaynak = "🔗 Eşten" if is_peer else "📱 Telefondan"
                 app.q.put(("info", f"{kaynak}: {text}"))
-                try:
+                def answer():
                     if app.provider in ("gemini", "gpt"):
-                        reply = app._alt_chat(text)  # kota uyarısı içeride ekleniyor
-                    elif app.provider == "offline":
-                        reply = app._offline(text)
-                    else:
-                        reply = app.brain.ask(text, on_tool=lambda t: app.q.put(("status", f"{t}…")))
+                        return app._alt_chat(text)  # kota uyarısı içeride ekleniyor
+                    if app.provider == "offline":
+                        return app._offline(text)
+                    return app.brain.ask(text, on_tool=lambda t: app.q.put(("status", f"{t}…")))
+
+                try:
+                    reply = app._tracked(text, "eş makine" if is_peer else "telefon", answer)
                 except Exception as e:
                     log(f"uzak istek hatası: {e!r}")
                     reply = f"{app.machine_name}'de hata oldu: {type(e).__name__}"
@@ -4790,6 +4977,7 @@ class App:
                     app.q.put(("status", "Hazır"))
                     app._no_relay = False
                     app.busy = False
+                    remote_lock.release()
                 app.q.put(("info", f"↩️ Yanıt: {reply}"))
                 self._reply(200, {"reply": reply})
 
@@ -4907,7 +5095,7 @@ class App:
         self.busy = True
         self.stop_event.clear()
         self.q.put(("status", "Otomatik görev…"))
-        self._work(text)
+        self._work_tracked(text, "zamanlanmış")
 
     def _reminder_loop(self):
         while True:

@@ -3,6 +3,7 @@ import http.server
 import json
 import tempfile
 import threading
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -398,6 +399,105 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(post("/ask", "t" * 40, text="hello")[1]["reply"], "echo: hello")
             self.assertEqual(post("/ping", "wrong")[0], 403)
         finally:
+            server.shutdown()
+            server.server_close()
+
+    def _phone_app(self, alt_chat):
+        class Queue:
+            def put(self, _item):
+                pass
+
+        servers = []
+
+        class EphemeralServer(http.server.ThreadingHTTPServer):
+            def __init__(self, address, handler):
+                super().__init__((address[0], 0), handler)
+                servers.append(self)
+
+        app = jarvis.App.__new__(jarvis.App)
+        app._write = lambda *_args: None
+        app.machine_name = "Test JARVIS"
+        app.provider = "gemini"
+        app.busy = False
+        app.stop_event = threading.Event()
+        app.q = Queue()
+        app._restore = lambda: None
+        app.on_ui = lambda callback: callback()
+        app._alt_chat = alt_chat
+        with patch.object(http.server, "ThreadingHTTPServer", EphemeralServer):
+            app._start_phone_server({"phone_token": "t" * 40, "web_remote_access": False})
+        return app, servers[0]
+
+    @staticmethod
+    def _raw_post(port, path, body, headers=None):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", path)
+        for key, value in (headers or {"Content-Length": str(len(body))}).items():
+            conn.putheader(key, value)
+        conn.endheaders()
+        if body:
+            conn.send(body)
+        response = conn.getresponse()
+        data = json.loads(response.read() or b"{}")
+        conn.close()
+        return response.status, data
+
+    def test_phone_server_rejects_bad_bodies_and_non_ascii_tokens(self):
+        app, server = self._phone_app(lambda text: "ok")
+        try:
+            port = server.server_port
+            self.assertEqual(self._raw_post(port, "/ping", b"", {"Content-Length": "-1"})[0], 413)
+            self.assertEqual(self._raw_post(port, "/ping", b"", {"Content-Length": "200000"})[0], 413)
+            self.assertEqual(self._raw_post(port, "/ping", b"[1,2]")[0], 400)
+            body = json.dumps({"token": "şifre-ğüış"}).encode("utf-8")
+            self.assertEqual(self._raw_post(port, "/ping", body)[0], 403)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_phone_server_throttles_repeated_wrong_codes(self):
+        app, server = self._phone_app(lambda text: "ok")
+        try:
+            port = server.server_port
+            wrong = json.dumps({"token": "wrong"}).encode()
+            codes = [self._raw_post(port, "/ping", wrong)[0] for _ in range(jarvis.PHONE_MAX_FAILS)]
+            self.assertEqual(set(codes), {403})
+            right = json.dumps({"token": "t" * 40}).encode()
+            self.assertEqual(self._raw_post(port, "/ping", right)[0], 429)
+            with patch.object(jarvis.time, "time", return_value=time.time() + jarvis.PHONE_FAIL_WINDOW + 1):
+                self.assertEqual(self._raw_post(port, "/ping", right)[0], 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_phone_server_runs_one_remote_request_at_a_time(self):
+        started, release = threading.Event(), threading.Event()
+
+        def slow_chat(text):
+            started.set()
+            release.wait(5)
+            return f"done: {text}"
+
+        app, server = self._phone_app(slow_chat)
+        try:
+            port = server.server_port
+            body = lambda text: json.dumps({"token": "t" * 40, "text": text}).encode()
+            first = {}
+            worker = threading.Thread(target=lambda: first.update(
+                result=self._raw_post(port, "/ask", body("one"))))
+            worker.start()
+            self.assertTrue(started.wait(5))
+            status, data = self._raw_post(port, "/ask", body("two"))
+            self.assertEqual(status, 200)
+            self.assertIn("meşgul", data["reply"])
+            release.set()
+            worker.join(5)
+            self.assertEqual(first["result"][1]["reply"], "done: one")
+            self.assertFalse(app.busy)
+            self.assertEqual(self._raw_post(port, "/ask", body("three"))[1]["reply"], "done: three")
+        finally:
+            release.set()
             server.shutdown()
             server.server_close()
 
