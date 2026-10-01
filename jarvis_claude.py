@@ -37,6 +37,7 @@ from tkinter import messagebox
 
 import anthropic
 import psutil
+import jarvis_tasks
 try:
     from headroom.compress import compress as _headroom_compress
 except ImportError:
@@ -925,6 +926,10 @@ TOOLS = [
     {"name": "save_memory", "description": "Kullanıcı hakkında kalıcı bir bilgiyi hafızaya kaydeder.",
      "input_schema": _obj({"category": {"type": "string", "enum": ["identity", "preferences", "notes"]},
                            "key": {"type": "string"}, "value": {"type": "string"}}, ["category", "key", "value"])},
+    {"name": "tasks",
+     "description": "Görev günlüğü: JARVIS kapanırsa yarım kalan işleri kaldığı yerden sürdürür. action: list (son görevler ve durumları), resume (task_id verilmezse en son yarım kalan görev; asıl isteği ve tamamlanan adımları döndürür, sen kalan işi tamamlarsın), cancel (yarım kalan görevi kapatır). Kullanıcı 'kaldığın yerden devam et / yarım kalan görev' derse kullan.",
+     "input_schema": _obj({"action": {"type": "string", "enum": ["list", "resume", "cancel"]},
+                           "task_id": {"type": "string"}}, ["action"])},
     {"name": "search_history", "description": "Önceki kullanıcı/JARVIS konuşmalarını yerel günlükte anahtar kelimeyle arar; eski bir konu, karar veya konuşma ayrıntısı sorulduğunda kullan.",
      "input_schema": _obj({"query": {"type": "string", "description": "Günlükte aranacak sözcükler"}}, ["query"])},
     {"name": "mcp_list_tools", "description": "Yapılandırılmış yerel MCP entegrasyonlarında araç ara/listele (DaVinci Resolve, OmniRoute vb.). Bir MCP entegrasyonuna ihtiyaç varsa önce bunu kullan; query içine sunucu/işlev/konu yaz.",
@@ -1526,6 +1531,22 @@ class Tools:
         self.mcp = MCPToolBridge(CONFIG_FILE.parent / "mcp_servers.json", on_error=log)
 
     def run(self, name, args):
+        out, is_err = self._run_tool(name, args)
+        self.record_step(name, args, not is_err, out)
+        return out, is_err
+
+    def record_step(self, name, args, ok, out):
+        """Aktif görev varsa adımı görev günlüğüne yazar (kaldığı yerden devam için)."""
+        journal, task_id = getattr(self, "journal", None), getattr(self, "current_task", None)
+        if not journal or not task_id or name == "tasks":
+            return
+        try:
+            journal.record_step(task_id, name, args, ok,
+                                out if isinstance(out, str) else "(görsel/çoklu çıktı)")
+        except OSError as e:
+            log(f"görev günlüğü yazılamadı: {e!r}")
+
+    def _run_tool(self, name, args):
         if name.startswith("mcp__"):
             return self._call_mcp_tool(name, args), False
         fn = getattr(self, "t_" + name, None)
@@ -2884,6 +2905,34 @@ tools.syncTime = "TRUE"
         save_json(MEMORY_FILE, mem)
         return "Kaydedildi."
 
+    def t_tasks(self, action, task_id=None):
+        """Yarım kalan görevleri listeler, sürdürür veya kapatır."""
+        journal = getattr(self, "journal", None)
+        if journal is None:
+            return "Görev günlüğü açık değil."
+        if action == "list":
+            rows = [f"- {t['id']} [{t['status']}] {t['created']} · {len(t.get('steps', []))} adım · "
+                    f"{t.get('text', '')[:80]}" for t in journal.all()[:15]]
+            return "Son görevler:\n" + ("\n".join(rows) if rows else "(yok)")
+        if task_id:
+            try:
+                task = journal.get(task_id)
+            except ValueError as e:
+                return str(e)
+        else:
+            task = next((t for t in journal.all() if t.get("status") == jarvis_tasks.INTERRUPTED), None)
+        if task is None:
+            return "Yarım kalan görev bulunamadı." if not task_id else f"Görev bulunamadı: {task_id}"
+        if task.get("status") not in (jarvis_tasks.INTERRUPTED, jarvis_tasks.FAILED):
+            return f"Görev {task['id']} durumu {task['status']}; yalnızca yarım kalan/başarısız görevler sürdürülür."
+        if action == "cancel":
+            journal.set_status(task["id"], jarvis_tasks.CANCELLED)
+            return f"Görev kapatıldı: {task['id']}"
+        if action == "resume":
+            journal.set_status(task["id"], jarvis_tasks.RESUMED)
+            return journal.resume_prompt(task)
+        return "action: list/resume/cancel olmalı."
+
     def t_search_history(self, query):
         terms = [part.casefold() for part in str(query).split() if len(part) > 1]
         if not terms:
@@ -3261,6 +3310,7 @@ class Brain:
                 self.app.computer_allowed = True  # JARVIS kapanana kadar geçerli
             self.app.hide_for_control()
             out = self._computer().run(block.name, args)
+            self.tools.record_step(block.name, args, True, out)
             return {"type": "tool_result", "tool_use_id": block.id, "toolset_name": "computer",
                     "content": out if isinstance(out, list) else [{"type": "text", "text": out}]}
         out, is_err = self.tools.run(block.name, args)
@@ -4182,6 +4232,7 @@ class App:
         root.bind("<Escape>", lambda e: self.voice.stop())
 
         self.tools = Tools(self)          # araçlar (beyinden bağımsız)
+        self.tools.journal = jarvis_tasks.TaskJournal(BASE / "memory" / "tasks")
         self._computer_obj = None
         self.offline_brain = OfflineBrain()
         self.chat_history = []            # gemini/gpt sohbet geçmişi
@@ -4211,6 +4262,14 @@ class App:
                             "ya da fareyi ekranın sol üst köşesine götür.\n")
         log("JARVIS başladı")
         self.q.put(("reply", GREETING))
+        try:
+            interrupted = self.tools.journal.recover_interrupted()
+        except OSError as e:
+            log(f"görev günlüğü okunamadı: {e!r}")
+            interrupted = []
+        for t in interrupted[:3]:
+            self._write("info", f"⏸️ Yarım kalan görev ({len(t.get('steps', []))} adım tamamlanmıştı): "
+                                f"{t.get('text', '')[:120]}\n   Sürdürmek için 'kaldığın yerden devam et' de.")
         threading.Thread(target=self._reminder_loop, daemon=True).start()
         threading.Thread(target=self._listen_loop, daemon=True).start()
         threading.Thread(target=self._schedule_loop, daemon=True).start()
@@ -4337,7 +4396,36 @@ class App:
         self.busy = True
         self.stop_event.clear()
         self.status.config(text="Düşünüyor…")
-        threading.Thread(target=self._work, args=(text,), daemon=True).start()
+        threading.Thread(target=self._work_tracked, args=(text,), daemon=True).start()
+
+    def _tracked(self, text, source, fn):
+        """fn()'i görev günlüğüne kaydederek çalıştırır; JARVIS çökerse görev RUNNING kalır ve
+        bir sonraki açılışta yarım kalan görev olarak sunulur."""
+        tools = getattr(self, "tools", None)
+        journal = getattr(tools, "journal", None)
+        if journal is None:
+            return fn()
+        task_id = None
+        try:
+            task_id = journal.start(text, getattr(self, "provider", ""), source)
+        except OSError as e:
+            log(f"görev günlüğü yazılamadı: {e!r}")
+        tools.current_task = task_id
+        status, result = jarvis_tasks.FAILED, None
+        try:
+            result = fn()
+            status = jarvis_tasks.COMPLETED
+            return result
+        finally:
+            tools.current_task = None
+            if task_id:
+                try:
+                    journal.finish(task_id, status, result if isinstance(result, str) else None)
+                except OSError as e:
+                    log(f"görev günlüğü yazılamadı: {e!r}")
+
+    def _work_tracked(self, text, source="masaüstü"):
+        return self._tracked(text, source, lambda: self._work(text))
 
     def _work(self, text):
         # Beyin değiştirme: "gemini ol", "gpt ol", "normal jarvis ol", "claude'a dön" ...
@@ -4694,13 +4782,15 @@ class App:
                 text = data["text"]
                 kaynak = "🔗 Eşten" if is_peer else "📱 Telefondan"
                 app.q.put(("info", f"{kaynak}: {text}"))
-                try:
+                def answer():
                     if app.provider in ("gemini", "gpt"):
-                        reply = app._alt_chat(text)  # kota uyarısı içeride ekleniyor
-                    elif app.provider == "offline":
-                        reply = app._offline(text)
-                    else:
-                        reply = app.brain.ask(text, on_tool=lambda t: app.q.put(("status", f"{t}…")))
+                        return app._alt_chat(text)  # kota uyarısı içeride ekleniyor
+                    if app.provider == "offline":
+                        return app._offline(text)
+                    return app.brain.ask(text, on_tool=lambda t: app.q.put(("status", f"{t}…")))
+
+                try:
+                    reply = app._tracked(text, "eş makine" if is_peer else "telefon", answer)
                 except Exception as e:
                     log(f"uzak istek hatası: {e!r}")
                     reply = f"{app.machine_name}'de hata oldu: {type(e).__name__}"
@@ -4826,7 +4916,7 @@ class App:
         self.busy = True
         self.stop_event.clear()
         self.q.put(("status", "Otomatik görev…"))
-        self._work(text)
+        self._work_tracked(text, "zamanlanmış")
 
     def _reminder_loop(self):
         while True:

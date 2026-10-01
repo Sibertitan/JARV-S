@@ -14,6 +14,7 @@ Updated: 2026-09-30
 - claude-code-setup's concept is implemented natively as the read-only `recommend_setup` tool: it analyzes JARVIS's own environment and returns prioritized, actionable setup recommendations without changing any setting.
 - Built-in code agent (codex): the `code_run` tool writes given code to a file, executes it (Python/Node/bash/PowerShell), and returns stdout+stderr+exit code, enabling a write→run→fix loop. It runs locally on both Windows and Kali, needs no extra API, and requires user confirmation before executing. Covered by unit tests (execute path and denial path).
 - Phone remote control verified in code: the phone `/ask` endpoint routes to the full tool-enabled agent (`gemini_agent`/`gpt_agent`/`omniroute_agent` with `self.tools`), so the free Gemini mode from the phone can drive every desktop tool. Whichever OS JARVIS runs on (Windows or Kali) is the one the phone controls; mesh forwards commands between machines.
+- Task checkpoints (`jarvis_tasks.py`, `tasks` tool): every request is journaled to `memory/tasks/` with each tool step; tasks still RUNNING at startup are offered for resume with their completed steps. Secrets are redacted before writing. Covered by `tests/test_tasks.py`; the GUI startup notice itself was not exercised here.
 - Python unit tests: 23 passed. Python source byte-compilation and Git Bash syntax checks for the two shell scripts passed.
 - The original `JARVIS Ucretsiz.exe` and `JARVIS_Ucretsiz_Telefon.apk` remain unchanged.
 
