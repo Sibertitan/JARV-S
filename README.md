@@ -79,6 +79,10 @@ JARVIS `config/api_keys.json` ayarına `omniroute_url` (ör. `http://127.0.0.1:2
 
 JARVIS, MCP araçlarını model isteğine yüzlerce şema eklemeden yerel olarak arar ve gereken aracı çağırır. OmniRoute MCP bağlantısı `omniroute_mcp_stdio.mjs` yerel başlatıcısını kullanır; kurulumdaki Node.js ve OmniRoute paket yollarını `config/mcp_servers.json` içinde ayarlayın. Bu başlatıcı, Türkçe karakter/boşluk içeren Windows yollarında resmi CLI başlatıcısının kapanması sorununu aşar ve OmniRoute'un MCP stdout korumasını yükler. OmniRoute ağ geçidi yerelde çalışmalıdır. Salt-okunur MCP araçları çağrılabilir; yazma/değiştirme araçları yerel onay ister.
 
+## Yarım kalan görevler (checkpoint)
+
+Her istek (masaüstü, telefon, eş makine veya zamanlanmış görev) `memory/tasks/` altında bir görev olarak kaydedilir; her araç adımından sonra durum diske yazılır. JARVIS kapanır ya da çökerse bir sonraki açılışta yarım kalan görev gösterilir; "kaldığın yerden devam et" dediğinde JARVIS asıl isteği ve tamamlanan adımları alıp yalnızca kalan işi yapar (`tasks` aracı: list / resume / cancel). Parola, API anahtarı, token ve çerezler günlüğe yazılmadan önce gizlenir; son 50 görev tutulur.
+
 ## Kalıcı oturum hafızası ve kendini geliştirme
 
 JARVIS, [claude-mem](https://github.com/thedotmack/claude-mem) fikrini yerel olarak uygular: uzun ya da önemli bir işi bitirince `remember_session` ile 1-3 cümlelik bir oturum özeti `memory/session_memory.jsonl` dosyasına yazılır. Bu özetler bir sonraki açılışta konuşma bağlamına otomatik geri yüklenir; `recall_sessions` ile de aranabilir. Böylece kaldığımız yerden devam edilebilir.
