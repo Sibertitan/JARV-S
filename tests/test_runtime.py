@@ -256,6 +256,63 @@ class RuntimeTests(unittest.TestCase):
             # Kod yine de dosyaya yazılmış olmalı (yaz→sonra çalıştır ayrımı)
             self.assertTrue(any(p.suffix == ".py" for p in Path(tmp).rglob("*.py")))
 
+    def _project_tools(self, root, confirm=True):
+        tools = jarvis.Tools.__new__(jarvis.Tools)
+        tools.app = SimpleNamespace(ask_confirm=lambda *a, **k: confirm)
+        return tools, patch.object(jarvis.Tools, "_projects_dir", staticmethod(lambda: root / "projects"))
+
+    def test_project_file_tools_reject_paths_outside_project_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "projects").mkdir()
+            tools, projects = self._project_tools(root)
+            with projects, patch.object(jarvis, "open_target") as opened:
+                out = tools.t_write_project_file("demo", "../../escaped.txt", "x")
+                self.assertIn("Geçersiz dosya yolu", out)
+                self.assertFalse((root / "escaped.txt").exists())
+                ok = tools.t_write_project_file("demo", "src/app.py", "print(1)")
+                self.assertIn("Yazıldı", ok)
+                self.assertTrue((root / "projects" / "demo" / "src" / "app.py").exists())
+
+                (root / "secret.exe").write_text("x")
+                out = tools.t_run_project("demo", "../../secret.exe")
+                self.assertIn("Geçersiz dosya yolu", out)
+                opened.assert_not_called()
+
+                out = tools.t_code_run("print(1)", language="python", filename="../../evil.py")
+                self.assertIn("Geçersiz dosya yolu", out)
+                self.assertFalse((root / "evil.py").exists())
+                out = tools.t_code_run("print(1)", language="python", filename=str(root / "abs.py"))
+                self.assertIn("Geçersiz dosya yolu", out)
+                self.assertFalse((root / "abs.py").exists())
+
+    def test_mesh_beacon_requires_valid_signature_fresh_timestamp_and_matching_ip(self):
+        token = "team-secret-token-123456"
+        beacon = jarvis.mesh_beacon_payload(token, "kali", 8765, "192.168.1.20", now=1000)
+        self.assertNotIn(token, json.dumps(beacon))
+        self.assertEqual(jarvis.mesh_verify_beacon(token, beacon, "192.168.1.20", now=1010),
+                         ("kali", 8765))
+        # yanlış takım kodu, eski yayın, farklı gönderen IP, değiştirilmiş ad, imzasız yayın
+        self.assertIsNone(jarvis.mesh_verify_beacon("other-token", beacon, "192.168.1.20", now=1010))
+        self.assertIsNone(jarvis.mesh_verify_beacon(token, beacon, "192.168.1.20", now=1100))
+        self.assertIsNone(jarvis.mesh_verify_beacon(token, beacon, "192.168.1.66", now=1010))
+        self.assertIsNone(jarvis.mesh_verify_beacon(token, dict(beacon, name="windows"),
+                                                    "192.168.1.20", now=1010))
+        self.assertIsNone(jarvis.mesh_verify_beacon(
+            token, {"jarvis": True, "name": "kali", "port": 8765}, "192.168.1.20", now=1010))
+        self.assertIsNone(jarvis.mesh_verify_beacon("", beacon, "192.168.1.20", now=1010))
+
+    def test_schedule_slot_handles_window_across_midnight(self):
+        from datetime import datetime as dt
+        self.assertEqual(jarvis.schedule_slot("09:00", dt(2026, 10, 1, 9, 5)), "2026-10-01")
+        self.assertIsNone(jarvis.schedule_slot("09:00", dt(2026, 10, 1, 9, 10)))
+        self.assertIsNone(jarvis.schedule_slot("09:00", dt(2026, 10, 1, 8, 59)))
+        # 23:55 görevi: 23:58'de ve gece yarısından sonra 00:03'te aynı (dünkü) pencerede
+        self.assertEqual(jarvis.schedule_slot("23:55", dt(2026, 10, 1, 23, 58)), "2026-10-01")
+        self.assertEqual(jarvis.schedule_slot("23:55", dt(2026, 10, 2, 0, 3)), "2026-10-01")
+        self.assertIsNone(jarvis.schedule_slot("23:55", dt(2026, 10, 2, 0, 6)))
+        self.assertIsNone(jarvis.schedule_slot("bozuk", dt(2026, 10, 1, 9, 0)))
+
     def test_recommend_setup_is_read_only_and_prioritized(self):
         names = {item.get("name") for item in jarvis.TOOLS}
         self.assertIn("recommend_setup", names)
