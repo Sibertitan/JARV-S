@@ -3492,6 +3492,9 @@ GREETING = "Hoş geldiniz Ali İhsan Bey."
 TTS_VOICE_SV = "sv-SE-MattiasNeural"
 SV_TAG = re.compile(r"<sv>(.*?)</sv>", re.S)
 VOSK_TR = BASE / "offline" / "vosk-tr"
+PHONE_MAX_BODY = 100_000      # telefon/mesh isteği gövde sınırı (bayt)
+PHONE_MAX_FAILS = 10          # bu kadar yanlış koddan sonra ...
+PHONE_FAIL_WINDOW = 60        # ... bu süre (sn) boyunca o IP'den istek kabul edilmez
 CLOUDFLARED = (BASE / "offline" / "cloudflared.exe") if os.name == "nt" else shutil.which("cloudflared")
 
 
@@ -4655,6 +4658,21 @@ class App:
             ip = "?"
         self.my_ip = ip
         app = self
+        remote_lock = threading.Lock()   # aynı anda yalnızca bir uzak istek ajanı çalıştırır
+        failures = {}                    # istemci IP -> son başarısız kod denemelerinin zamanları
+        failures_lock = threading.Lock()
+
+        def throttled(client):
+            """Son 60 sn'de 10+ yanlış kod denemesi yapan IP'yi geçici olarak engeller."""
+            now = time.time()
+            with failures_lock:
+                recent = [t for t in failures.get(client, []) if now - t < PHONE_FAIL_WINDOW]
+                failures[client] = recent
+                return len(recent) >= PHONE_MAX_FAILS
+
+        def record_failure(client):
+            with failures_lock:
+                failures.setdefault(client, []).append(time.time())
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -4669,15 +4687,27 @@ class App:
                 self.wfile.write(body)
 
             def do_POST(self):
+                client = self.client_address[0]
+                if throttled(client):
+                    return self._reply(429, {"error": "Çok fazla yanlış kod denemesi; biraz bekle."})
                 try:
                     n = int(self.headers.get("Content-Length", 0))
-                    data = json.loads(self.rfile.read(min(n, 100_000)) or b"{}")
+                except ValueError:
+                    return self._reply(400, {"error": "bad json"})
+                if n < 0 or n > PHONE_MAX_BODY:
+                    return self._reply(413, {"error": "istek çok büyük"})
+                try:
+                    data = json.loads(self.rfile.read(n) or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError
                 except ValueError:
                     return self._reply(400, {"error": "bad json"})
                 given = str(data.get("token", ""))
-                is_phone = secrets.compare_digest(given, token)
-                is_peer = bool(app.team_token) and secrets.compare_digest(given, app.team_token)
+                is_phone = secrets.compare_digest(given.encode(), token.encode())
+                is_peer = bool(app.team_token) and secrets.compare_digest(
+                    given.encode(), app.team_token.encode())
                 if not (is_phone or is_peer):
+                    record_failure(client)
                     log("bağlantı: yanlış kod")  # gizlilik: istemci IP'si kaydedilmez
                     return self._reply(403, {"error": "Kod yanlış"})
                 if self.path == "/whoami":
@@ -4686,7 +4716,11 @@ class App:
                     return self._reply(200, {"reply": f"{app.machine_name} JARVIS'ine bağlandın."})
                 if self.path != "/ask" or not data.get("text"):
                     return self._reply(404, {"error": "bulunamadı"})
+                # Kontrol ve işaretleme tek adımda: iki uzak istek aynı anda ajanı çalıştıramaz.
+                if not remote_lock.acquire(blocking=False):
+                    return self._reply(200, {"reply": f"{app.machine_name} JARVIS şu an başka bir işle meşgul."})
                 if app.busy:
+                    remote_lock.release()
                     return self._reply(200, {"reply": f"{app.machine_name} JARVIS şu an başka bir işle meşgul."})
                 app.busy = True
                 app.stop_event.clear()
@@ -4709,6 +4743,7 @@ class App:
                     app.q.put(("status", "Hazır"))
                     app._no_relay = False
                     app.busy = False
+                    remote_lock.release()
                 app.q.put(("info", f"↩️ Yanıt: {reply}"))
                 self._reply(200, {"reply": reply})
 
