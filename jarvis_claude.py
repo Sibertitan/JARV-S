@@ -805,6 +805,15 @@ TOOLS = [
                            "project": {"type": "string", "description": "Kaydedileceği proje adı (varsayılan 'codex')"},
                            "filename": {"type": "string", "description": "Dosya adı (varsayılan dile göre)"},
                            "args": {"type": "string", "description": "İsteğe bağlı komut satırı argümanları"}}, ["code"])},
+    {"name": "midas",
+     "description": "Midas yatırım modülü — YALNIZCA SİMÜLASYON. Midas'ın resmi herkese açık API'si olmadığı için gerçek hesaba bağlanmaz; tüm veriler sentetiktir ve semboller 'SIM.' ile başlar (SIM.THYAO, SIM.ASELS, SIM.AAPL, SIM.SPY). action: status (mod/kurallar), portfolio (nakit+pozisyonlar), quote (symbol fiyatı), orders (emirler), order (emir oluşturur; HER ZAMAN onay bekler, kendiliğinden gerçekleşmez), approve (order_id'yi kullanıcıya masaüstü onay penceresiyle sorar, onaylarsa simüle gerçekleştirir), cancel (order_id). Kullanıcı gerçek Midas işlemi isterse bunun yapılamayacağını açıkça söyle.",
+     "input_schema": _obj({"action": {"type": "string", "enum": ["status", "portfolio", "quote", "orders", "order", "approve", "cancel"]},
+                           "symbol": {"type": "string"},
+                           "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                           "quantity": {"type": "number"},
+                           "order_type": {"type": "string", "enum": ["MARKET", "LIMIT"]},
+                           "limit_price": {"type": "number"},
+                           "order_id": {"type": "string"}}, ["action"])},
     {"name": "edit_image",
      "description": "Var olan bir fotoğrafı düzenler ve PNG/JPG olarak Resimler\\JARVIS Görseller'e kaydeder. operations: resize_w, crop_ratio (1:1,4:5,9:16,16:9), rotate, brightness/contrast/saturation/sharpness (1.0=aynı), filter (grayscale/sepia/blur/sharpen/auto/vivid/warm/cool), border, border_color.",
      "input_schema": _obj({"path": {"type": "string"}, "operations": {"type": "object"},
@@ -2478,6 +2487,60 @@ class Tools:
             return f"Kod {path} çalıştırıldı ama 120 sn içinde bitmedi (zaman aşımı)."
         out = (r.stdout + ("\n[stderr]\n" + r.stderr if r.stderr.strip() else "")).strip()
         return f"[{language} → {path.name}] çıkış kodu {r.returncode}\n" + ((out or "(çıktı yok)")[:8000])
+
+    def _midas_sim(self):
+        sim = getattr(self, "_midas", None)
+        if sim is None:
+            import jarvis_midas
+            cfg = load_json(CONFIG_FILE, {})
+            sim = jarvis_midas.MidasSimulator(
+                BASE / "memory" / "midas_sim.json", BASE / "memory" / "midas_audit.jsonl",
+                mode=cfg.get("midas_mode", "SIMULATION"),
+                max_order_value=cfg.get("midas_max_order_value", 10_000))
+            self._midas = sim
+        return sim
+
+    def t_midas(self, action, symbol=None, side=None, quantity=None, order_type="MARKET",
+                limit_price=None, order_id=None):
+        """Midas — yalnızca simülasyon/salt okunur; emirler kullanıcının masaüstü onayıyla gerçekleşir."""
+        import jarvis_midas
+        try:
+            sim = self._midas_sim()
+            if action == "status":
+                out = sim.status()
+            elif action == "portfolio":
+                out = sim.portfolio()
+            elif action == "quote":
+                out = sim.quote(symbol)
+            elif action == "orders":
+                out = sim.orders()
+            elif action == "order":
+                out = sim.place_order(symbol, side, quantity, order_type, limit_price)
+                if out["status"] == jarvis_midas.PENDING:
+                    out["note"] = "Emir onay bekliyor; kullanıcı onaylamadan gerçekleşmez (approve)."
+            elif action == "approve":
+                o = next((x for x in sim.orders() if x["id"] == order_id), None)
+                if o is None:
+                    return f"Emir bulunamadı: {order_id}"
+                if self.app is None or not hasattr(self.app, "ask_confirm"):
+                    return "Midas emir onayı için JARVIS masaüstü onay penceresi gerekli."
+                price = (o["limit_price"] if o["order_type"] == "LIMIT"
+                         else sim.quote(o["symbol"])["price"])
+                ok = self.app.ask_confirm(
+                    "Midas SİMÜLASYON emri onayı",
+                    f"SİMÜLASYON (gerçek para yok)\n\n{o['side']} {o['quantity']:g} {o['symbol']}\n"
+                    f"Tür: {o['order_type']}  Fiyat: {price}\nTahmini değer: {price * o['quantity']:.2f}\n\n"
+                    "Onaylıyor musun?")
+                if not ok:
+                    return "Kullanıcı emri onaylamadı; emir beklemede kaldı."
+                out = sim.approve(order_id, "kullanıcı (masaüstü onayı)")
+            elif action == "cancel":
+                out = sim.cancel(order_id)
+            else:
+                return "action: status/portfolio/quote/orders/order/approve/cancel olmalı."
+        except jarvis_midas.MidasError as e:
+            return f"Midas (simülasyon): {e}"
+        return json.dumps(out, ensure_ascii=False, indent=1)
 
     # ── Gemini/GPT için bilgisayar kontrolü (ekranı görüp tıklama) ──
     def _comp(self):
