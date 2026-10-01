@@ -99,6 +99,10 @@ Android APK ince bir istemcidir: yazdığın komutu aynı Wi-Fi'daki JARVIS bilg
 
 Bu Windows kopyasında [davinci-resolve-mcp](https://github.com/samuelgursky/davinci-resolve-mcp) kaynakları `work/davinci-resolve-mcp/` altında bulunur ve gizli `config/mcp_servers.json` ayarı bu bilgisayardaki Python'a göre hazırlanmıştır; sunucu 37 aracı keşfetti ve Resolve'u başlatmayan `runtime_mode` çağrısı doğrulandı. Linux/Kali kopyasında depoyu ve MCP Python bağımlılıklarını kurup `config/mcp_servers.example.json` içindeki komut/yolları uyarlayın. Harici betikleme API'si Resolve sürümü/edition ve ayarlarına bağlıdır; canlı düzenleme bu ortamda doğrulanmadı. Yalnızca güvendiğiniz yerel MCP sunucularını yapılandırın.
 
+## Midas (yalnızca simülasyon)
+
+Midas'ın resmi, herkese açık bir API'si olmadığı için JARVIS gerçek Midas hesabına bağlanmaz. `midas` aracı sentetik bir piyasada (`SIM.THYAO`, `SIM.ASELS`, `SIM.AAPL`, `SIM.SPY`) portföy, fiyat ve emir akışını simüle eder. Her emir onay bekler ve yalnızca masaüstündeki onay penceresinde onay verilirse simüle olarak gerçekleşir; otomatik işlem kapalıdır ve açılamaz. Ayrıntılar ve canlı erişimin neden yapılmadığı: [docs/MIDAS.md](docs/MIDAS.md).
+
 ## Anahtar güvenliği
 
 `config/api_keys.json` Git tarafından izlenmez. Anahtarın yanlışlıkla herkese açık bir yerde paylaşıldığını düşünüyorsanız Google AI Studio'dan iptal edip yenisini oluşturun.

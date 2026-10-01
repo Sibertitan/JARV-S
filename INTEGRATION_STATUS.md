@@ -17,6 +17,8 @@ Updated: 2026-09-30
 - Python unit tests: 23 passed. Python source byte-compilation and Git Bash syntax checks for the two shell scripts passed.
 - The original `JARVIS Ucretsiz.exe` and `JARVIS_Ucretsiz_Telefon.apk` remain unchanged.
 
+- Midas module (`jarvis_midas.py`, `midas` tool) is SIMULATION/READ_ONLY only: synthetic `SIM.*` market, every order waits for a desktop confirmation, approval re-validates, `AUTO_EXECUTION` is fixed to False, `LIVE` mode is refused. Midas has no official public API, so no real account access exists. Covered by `tests/test_midas.py`.
+
 ## Not verified or not equivalent
 
 - No physical Android phone was available. The emulator verified install, launch, local-network endpoint access, `/ping`, and `/ask`; a real Wi-Fi/router/manufacturer-device test remains outstanding. The APK is a network client, not a standalone Android port of desktop controls; a Windows/Kali JARVIS computer must be running and reachable.
