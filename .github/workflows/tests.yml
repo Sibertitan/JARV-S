@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        # GUI, audio and Windows-only packages are not needed by the unit tests.
+        run: python -m pip install anthropic "headroom-ai==0.39.1" "mcp>=1.30.0,<2.0.0" psutil
+      - name: Byte-compile sources
+        run: python -m py_compile *.py tests/*.py
+      - name: Check shell scripts
+        run: bash -n install_kali.sh && bash -n run_kali.sh
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v

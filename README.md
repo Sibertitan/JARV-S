@@ -23,7 +23,7 @@ Bu klasördeki `jarvis_claude.py` uygulamasını Python ile çalıştırır. Win
 Birden fazla JARVIS makinen varsa (ör. Windows ana makine + Kali) birbirlerine komut verebilir. Kurulum:
 
 1. Bir makinede JARVIS'e "mesh kur" de; sana bir **takım kodu** verir.
-2. Bu kodu diğer makinenin `config/api_keys.json` dosyasına `"team_token": "<kod>"` olarak ekle (aynı kod her iki makinede olmalı).
+2. Bu kodu diğer makinenin `config/api_keys.json` dosyasına `"team_token": "<kod>"` olarak ekle (aynı kod her iki makinede olmalı). Makineler birbirini bu kodla imzalanmış yayınlarla bulur; kodu bilmeyen bir cihaz kendini eş olarak tanıtamaz.
 3. Her iki makinede JARVIS'i başlat. Aynı Wi-Fi'daysalar birbirlerini otomatik bulur.
 
 Sonrasında "Kali'de şu taramayı yap", "Windows'ta PowerPoint aç" gibi dersen JARVIS komutu doğru makineye iletir ve yanıtı sana getirir. Telefon bir makineye bağlanır; o makine gerekince komutu diğerine iletir — yani telefondan her iki bilgisayarı da yönetebilirsin. (Aynı ağda UDP 8766 ve TCP 8765 açık olmalı; Windows Güvenlik Duvarı sorarsa izin ver.)
@@ -51,7 +51,7 @@ Mikrofon izni ve masaüstü oturumu gerektiğinden JARVIS'i grafik oturumu için
 
 ## Telefonda veya Windows'tan erişim
 
-Uygulama açıkken aynı Wi-Fi ağına bağlı telefondan ya da Windows bilgisayardan, ekranda gösterilen IP adresi ve güvenlik koduyla bağlanın. Gelen istekler JARVIS'in mevcut Gemini/yerel sağlayıcısından yürütülür. Başka bir ağdan erişim için ayrıca `cloudflared` kurup PATH'e ekleyin; JARVIS kuruluysa mevcut tünel desteğini kullanır. Güvenlik kodu ayar dosyasında tutulur; dışarıya açık tünel URL'sini ve kodu başkalarıyla paylaşmayın.
+Uygulama açıkken aynı Wi-Fi ağına bağlı telefondan ya da Windows bilgisayardan, ekranda gösterilen IP adresi ve güvenlik koduyla bağlanın. Gelen istekler JARVIS'in mevcut Gemini/yerel sağlayıcısından yürütülür. Başka bir ağdan erişim için ayrıca `cloudflared` kurup PATH'e ekleyin ve `config/api_keys.json` içine `"web_remote_access": true` yazın. Tünel bu ayar olmadan açılmaz, çünkü tam araçlı JARVIS'i internete açar. Güvenlik kodu ayar dosyasında tutulur; dışarıya açık tünel URL'sini ve kodu başkalarıyla paylaşmayın.
 
 ## Özellik ve platform notu
 

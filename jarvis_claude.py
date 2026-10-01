@@ -106,6 +106,65 @@ def read_jsonl(path, limit=None):
     return out[:limit] if limit else out
 
 
+# ─────────────────── mesh yayını imzası ───────────────────
+# Mesh yayınları team_token ile HMAC imzalanır. İmzasız, eski veya gönderen IP'si
+# yayındaki IP ile uyuşmayan yayınlar eş olarak kaydedilmez; böylece ağdaki başka
+# bir cihaz kendini "kali" diye tanıtıp team_token'ı ele geçiremez.
+MESH_BEACON_MAX_AGE = 30   # saniye
+
+
+def _mesh_mac(team_token, name, port, ip, ts):
+    import hashlib
+    import hmac
+    msg = json.dumps([str(name), int(port), str(ip), int(ts)], separators=(",", ":")).encode("utf-8")
+    return hmac.new(str(team_token).encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def mesh_beacon_payload(team_token, name, port, ip, now=None):
+    ts = int(time.time() if now is None else now)
+    return {"jarvis": True, "name": name, "port": int(port), "ip": ip, "ts": ts,
+            "mac": _mesh_mac(team_token, name, port, ip, ts)}
+
+
+def mesh_verify_beacon(team_token, data, sender_ip, now=None):
+    """Geçerli bir eş yayınıysa (ad, port) döner, değilse None."""
+    import hmac
+    if not team_token or not isinstance(data, dict) or not data.get("jarvis"):
+        return None
+    try:
+        name = str(data["name"])[:40]
+        port = int(data["port"])
+        ip = str(data["ip"])
+        ts = int(data["ts"])
+        mac = str(data["mac"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    now = time.time() if now is None else now
+    if abs(now - ts) > MESH_BEACON_MAX_AGE or ip != sender_ip or not 1 <= port <= 65535:
+        return None
+    if not hmac.compare_digest(mac, _mesh_mac(team_token, data["name"], port, ip, ts)):
+        return None
+    return name, port
+
+
+def schedule_slot(hhmm, now, window_minutes=10):
+    """Görev saati şimdi çalışma penceresindeyse o pencerenin tarihini (YYYY-AA-GG) döner.
+
+    Pencere gece yarısını geçebilir: 23:55 görevi 00:03'te hâlâ dünün penceresindedir.
+    """
+    from datetime import timedelta
+    try:
+        h, m = (int(x) for x in str(hhmm).split(":"))
+        start = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    except ValueError:
+        return None
+    if start > now:
+        start -= timedelta(days=1)
+    if now - start < timedelta(minutes=window_minutes):
+        return start.strftime("%Y-%m-%d")
+    return None
+
+
 # ─────────────────── Gemini günlük kota takibi ───────────────────
 # Ücretsiz Gemini Flash katmanı günde sınırlı sayıda istek verir. Kullanıcı
 # sınıra yaklaştığında uyarmak için gün bazında istek sayısını tutarız.
@@ -2329,6 +2388,13 @@ class Tools:
         return d
 
     @staticmethod
+    def _inside(base, rel):
+        """rel'i base altında çözer; dışarı çıkıyorsa (.., mutlak yol, sembolik bağ) None döner."""
+        base = Path(base).resolve()
+        target = (base / rel).resolve()
+        return target if base in target.parents else None
+
+    @staticmethod
     def _git_exe():
         for p in [r"C:\Program Files\Git\cmd\git.exe", r"C:\Program Files\Git\bin\git.exe"]:
             if os.path.exists(p):
@@ -2397,7 +2463,9 @@ class Tools:
         safe_f = "".join(c for c in filename if c not in '<>:"|?*').strip() or "main.txt"
         pdir = self._projects_dir() / safe_p
         pdir.mkdir(parents=True, exist_ok=True)
-        path = pdir / safe_f
+        path = self._inside(pdir, safe_f)
+        if path is None:
+            return f"Geçersiz dosya yolu: {filename}. Dosya proje klasörünün içinde olmalı."
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"Yazıldı: {path} ({len(content)} karakter)"
@@ -2405,7 +2473,9 @@ class Tools:
     def t_run_project(self, project, entry, pip_install=None):
         safe_p = "".join(c for c in project if c not in '<>:"/\\|?*').strip() or "proje"
         pdir = self._projects_dir() / safe_p
-        path = pdir / entry
+        path = self._inside(pdir, entry)
+        if path is None:
+            return f"Geçersiz dosya yolu: {entry}. Dosya proje klasörünün içinde olmalı."
         if not path.exists():
             return f"Dosya yok: {path}. Önce write_project_file ile yaz."
         if entry.lower().endswith((".html", ".htm")):
@@ -2442,7 +2512,10 @@ class Tools:
         safe_f = "".join(c for c in (filename or "") if c not in '<>:"|?*').strip()
         if not safe_f:
             safe_f = "main" + ext_by_lang[language]
-        path = pdir / safe_f
+        path = self._inside(pdir, safe_f)
+        if path is None:
+            return f"Geçersiz dosya yolu: {filename}. Dosya proje klasörünün içinde olmalı."
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(code, encoding="utf-8")
 
         arg_list = shlex.split(args) if args else []
@@ -4653,6 +4726,14 @@ class App:
             s.close()
         except OSError:
             ip = "?"
+        if ip == "?":
+            try:  # internet yoksa yerel ağ arayüzünü özel bir adres üzerinden bul
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("10.255.255.255", 1))
+                ip = s.getsockname()[0]
+                s.close()
+            except OSError:
+                pass
         self.my_ip = ip
         app = self
 
@@ -4732,17 +4813,24 @@ class App:
                                 "'mesh kur' de, çıkan takım kodunu diğer makinenin config/api_keys.json "
                                 "içine \"team_token\" olarak yaz. Sonra ikisi de birbirini bulur.")
 
-        if cfg.get("web_remote_access", True) and CLOUDFLARED and (not isinstance(CLOUDFLARED, Path) or CLOUDFLARED.exists()):
+        # İnternete açık tünel tam araçlı ajanı dışarı açar; yalnızca açık rıza ile
+        # ("web_remote_access": true) başlatılır.
+        if cfg.get("web_remote_access", False) is True and CLOUDFLARED and (not isinstance(CLOUDFLARED, Path) or CLOUDFLARED.exists()):
             threading.Thread(target=self._start_tunnel, args=(token,), daemon=True).start()
 
     def _mesh_beacon(self):
-        """Aynı ağa 'ben buradayım' yayını yapar (ad + port). Token yayınlanmaz."""
+        """Aynı ağa 'ben buradayım' yayını yapar (ad + port + team_token ile HMAC imzası).
+        Token'ın kendisi yayınlanmaz."""
         import socket
-        msg = json.dumps({"jarvis": True, "name": self.machine_name, "port": 8765}).encode("utf-8")
         while True:
+            msg = json.dumps(mesh_beacon_payload(self.team_token, self.machine_name, 8765,
+                                                 self.my_ip)).encode("utf-8")
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if self.my_ip != "?":
+                    # Yayın, imzadaki IP'den çıksın (VMware gibi birden çok ağ kartında da).
+                    s.bind((self.my_ip, 0))
                 s.sendto(msg, ("255.255.255.255", 8766))
                 s.close()
             except OSError:
@@ -4762,13 +4850,12 @@ class App:
         while True:
             try:
                 raw, addr = s.recvfrom(2048)
-                d = json.loads(raw)
-                if not d.get("jarvis") or d.get("name") == self.machine_name:
-                    continue
-                name = str(d.get("name", "?"))[:40]
+                peer = mesh_verify_beacon(self.team_token, json.loads(raw), addr[0])
+                if peer is None or peer[0] == self.machine_name:
+                    continue  # imzasız/eski/sahte yayın ya da kendimiz
+                name, port = peer
                 new = name not in self.peers
-                self.peers[name] = {"host": addr[0], "port": int(d.get("port", 8765)),
-                                    "last": time.time()}
+                self.peers[name] = {"host": addr[0], "port": port, "last": time.time()}
                 if new:
                     self.q.put(("info", f"🔗 Ağda bulundu: {name} ({addr[0]})"))
             except (OSError, ValueError):
@@ -4801,23 +4888,17 @@ class App:
             if self.busy:
                 continue
             now = datetime.now()
-            today = now.strftime("%Y-%m-%d")
-            hhmm = now.strftime("%H:%M")
             tasks = load_json(SCHEDULED_FILE, [])
-            changed = False
             for t in tasks:
-                if t.get("last_run") == today:
+                slot = schedule_slot(t.get("time", ""), now)
+                if slot is None or t.get("last_run") == slot:
                     continue
-                if t["time"] <= hhmm < (datetime.strptime(t["time"], "%H:%M") + __import__("datetime").timedelta(minutes=10)).strftime("%H:%M"):
-                    t["last_run"] = today
-                    changed = True
-                    if changed:
-                        save_json(SCHEDULED_FILE, tasks)
-                    self.q.put(("info", f"⏰ Otomatik görev: {t.get('label')}"))
-                    self._run_prompt(t["prompt"])
-                    break
-            if changed:
+                # Uzun sürebilecek görevden önce kaydet ki aynı pencere ikinci kez çalışmasın.
+                t["last_run"] = slot
                 save_json(SCHEDULED_FILE, tasks)
+                self.q.put(("info", f"⏰ Otomatik görev: {t.get('label')}"))
+                self._run_prompt(t["prompt"])
+                break
 
     def _run_prompt(self, text):
         """Bir metni kullanıcı yazmış gibi Jarvis'e işletir (otomatik görevler için)."""
